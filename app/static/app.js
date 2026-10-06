@@ -5,7 +5,9 @@ const els = {
   menuBtn: $("menuBtn"),
   newBtn: $("newBtn"),
   sessionList: $("sessionList"),
+  titleText: $("titleText"),
   titleInput: $("titleInput"),
+  titleMenuBtn: $("titleMenuBtn"),
   languageSelect: $("languageSelect"),
   engineStatus: $("engineStatus"),
   transcript: $("transcript"),
@@ -25,6 +27,7 @@ const state = {
   engineReady: false,
   recording: false,
   sessionId: null, // session shown in the main pane
+  title: "", // title of that session (or of the next recording)
   segmentCount: 0,
   speakers: {}, // speaker id -> custom name
   lastSpeaker: undefined, // speaker of the last rendered segment
@@ -66,6 +69,83 @@ function scrollToBottom() {
   els.transcript.scrollTop = els.transcript.scrollHeight;
 }
 
+// ---------------------------------------------------------------- action menu
+
+// Small dropdown opened from a "more_vert" button. Items:
+// { icon, label, action, danger?, confirm? } where `confirm` is the label
+// shown after a first click; the action only runs on the second click.
+let openedMenu = null;
+
+function closeMenu() {
+  if (!openedMenu) return;
+  openedMenu.anchor.setAttribute("aria-expanded", "false");
+  openedMenu.el.remove();
+  document.removeEventListener("pointerdown", openedMenu.onOutside, true);
+  document.removeEventListener("keydown", openedMenu.onKey, true);
+  window.removeEventListener("resize", closeMenu);
+  els.transcript.removeEventListener("scroll", closeMenu);
+  openedMenu = null;
+}
+
+function openMenu(anchor, items) {
+  const reopen = openedMenu?.anchor === anchor;
+  closeMenu();
+  if (reopen) return; // second click on the same button closes it
+
+  const menu = document.createElement("div");
+  menu.className = "menu";
+  menu.setAttribute("role", "menu");
+  for (const item of items) {
+    const btn = document.createElement("button");
+    btn.className = "menu-item" + (item.danger ? " danger" : "");
+    btn.setAttribute("role", "menuitem");
+    const label = document.createElement("span");
+    label.textContent = item.label;
+    btn.append(icon(item.icon), label);
+    btn.addEventListener("click", () => {
+      if (item.confirm && !btn.dataset.armed) {
+        btn.dataset.armed = "1";
+        label.textContent = item.confirm;
+        return;
+      }
+      closeMenu();
+      item.action();
+    });
+    menu.append(btn);
+  }
+  document.body.append(menu);
+
+  // Below the button, right-aligned with it; above it if there is no room.
+  const r = anchor.getBoundingClientRect();
+  const m = menu.getBoundingClientRect();
+  const top = r.bottom + 4 + m.height > window.innerHeight ? r.top - 4 - m.height : r.bottom + 4;
+  menu.style.top = `${Math.max(8, top)}px`;
+  menu.style.left = `${Math.max(8, Math.min(r.right - m.width, window.innerWidth - m.width - 8))}px`;
+
+  const buttons = [...menu.querySelectorAll(".menu-item")];
+  const onOutside = (e) => {
+    if (!menu.contains(e.target) && !anchor.contains(e.target)) closeMenu();
+  };
+  const onKey = (e) => {
+    const i = buttons.indexOf(document.activeElement);
+    if (e.key === "Escape") {
+      closeMenu();
+      anchor.focus();
+    } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const step = e.key === "ArrowDown" ? 1 : -1;
+      buttons[(i + step + buttons.length) % buttons.length].focus();
+    }
+  };
+  document.addEventListener("pointerdown", onOutside, true);
+  document.addEventListener("keydown", onKey, true);
+  window.addEventListener("resize", closeMenu);
+  els.transcript.addEventListener("scroll", closeMenu);
+  anchor.setAttribute("aria-expanded", "true");
+  openedMenu = { el: menu, anchor, onOutside, onKey };
+  buttons[0]?.focus();
+}
+
 // ---------------------------------------------------------------- transcript view
 
 function clearTranscript() {
@@ -92,54 +172,83 @@ function speakerName(id) {
   return state.speakers[id] || `Intervenant ${id.slice(1)}`;
 }
 
-function speakerChip(id) {
-  const chip = document.createElement("button");
+// A speaker heading: colored name label plus a "more_vert" action menu.
+function speakerTag(id) {
+  const tag = document.createElement("div");
+  tag.className = "speaker-tag";
+  tag.dataset.speaker = id;
+  tag.style.setProperty("--spk", `var(--spk-${(parseInt(id.slice(1), 10) - 1) % SPEAKER_COLORS + 1})`);
+
+  const chip = document.createElement("span");
   chip.className = "speaker-chip";
-  chip.dataset.speaker = id;
-  chip.style.setProperty("--spk", `var(--spk-${(parseInt(id.slice(1), 10) - 1) % SPEAKER_COLORS + 1})`);
-  chip.title = "Cliquer pour renommer";
   chip.append(icon("person"), document.createTextNode(speakerName(id)));
-  chip.addEventListener("click", () => startRename(chip));
-  return chip;
+
+  const more = document.createElement("button");
+  more.className = "icon-btn more-btn";
+  more.title = "Actions";
+  more.setAttribute("aria-label", `Actions sur ${speakerName(id)}`);
+  more.setAttribute("aria-haspopup", "menu");
+  more.append(icon("more_vert"));
+  more.addEventListener("click", () => {
+    const items = [{ icon: "edit", label: "Renommer l'intervenant", action: () => startRename(tag) }];
+    if (state.speakers[id]) {
+      items.push({
+        icon: "undo",
+        label: "Rétablir le nom par défaut",
+        action: () => saveSpeakerName(id, ""),
+      });
+    }
+    openMenu(more, items);
+  });
+
+  tag.append(chip, more);
+  return tag;
 }
 
-function refreshSpeakerChips() {
-  for (const chip of els.segments.querySelectorAll(".speaker-chip")) {
-    chip.replaceWith(speakerChip(chip.dataset.speaker));
+function refreshSpeakerTags() {
+  for (const tag of els.segments.querySelectorAll(".speaker-tag")) {
+    tag.replaceWith(speakerTag(tag.dataset.speaker));
   }
 }
 
-// Inline rename: the chip becomes a text field; Enter or leaving it saves,
+async function saveSpeakerName(id, name) {
+  const res = await fetch(`/api/sessions/${state.sessionId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ speakers: { [id]: name } }),
+  });
+  if (res.ok) state.speakers = (await res.json()).speakers;
+  else toast("Impossible de renommer l'intervenant.");
+  refreshSpeakerTags();
+}
+
+// Inline rename: the label becomes a text field; Enter or leaving it saves,
 // Escape cancels. The new name applies to every turn of that speaker.
-function startRename(chip) {
-  const id = chip.dataset.speaker;
+function startRename(tag) {
+  const id = tag.dataset.speaker;
   const input = document.createElement("input");
   input.className = "speaker-input";
   input.value = state.speakers[id] || "";
   input.placeholder = speakerName(id);
   input.maxLength = 80;
-  input.style.setProperty("--spk", chip.style.getPropertyValue("--spk"));
+  input.setAttribute("aria-label", "Nom de l'intervenant");
+  input.style.setProperty("--spk", tag.style.getPropertyValue("--spk"));
   let done = false;
-  const finish = async (save) => {
+  const finish = (save) => {
     if (done) return;
     done = true;
     if (save && input.value.trim() !== (state.speakers[id] || "")) {
-      const res = await fetch(`/api/sessions/${state.sessionId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ speakers: { [id]: input.value } }),
-      });
-      if (res.ok) state.speakers = (await res.json()).speakers;
-      else toast("Impossible de renommer l'intervenant.");
+      saveSpeakerName(id, input.value);
+    } else {
+      refreshSpeakerTags();
     }
-    refreshSpeakerChips();
   };
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter") finish(true);
     if (e.key === "Escape") finish(false);
   });
   input.addEventListener("blur", () => finish(true));
-  chip.replaceWith(input);
+  tag.replaceWith(input);
   input.focus();
 }
 
@@ -154,7 +263,7 @@ function addSegment(segment) {
   if (segment.speaker && segment.speaker !== state.lastSpeaker) {
     const turn = document.createElement("li");
     turn.className = "turn";
-    turn.append(speakerChip(segment.speaker));
+    turn.append(speakerTag(segment.speaker));
     els.segments.append(turn);
   }
   state.lastSpeaker = segment.speaker;
@@ -268,11 +377,17 @@ async function openSession(id) {
   if (!res.ok) return toast("Réunion introuvable.");
   const session = await res.json();
   state.sessionId = id;
-  els.titleInput.value = session.title;
+  setTitle(session.title);
   els.timer.textContent = clock(session.segments.at(-1)?.end ?? 0);
   renderSession(session);
   els.transcript.scrollTop = 0;
   els.sidebar.classList.remove("open");
+  loadSessions();
+}
+
+async function removeSession(id) {
+  await fetch(`/api/sessions/${id}`, { method: "DELETE" });
+  if (state.sessionId === id) newMeeting();
   loadSessions();
 }
 
@@ -290,16 +405,14 @@ async function deleteSession(id, button) {
     }, 3000);
     return;
   }
-  await fetch(`/api/sessions/${id}`, { method: "DELETE" });
-  if (state.sessionId === id) newMeeting();
-  loadSessions();
+  removeSession(id);
 }
 
 function newMeeting() {
   if (state.recording) return;
   state.sessionId = null;
   state.speakers = {};
-  els.titleInput.value = "";
+  setTitle("");
   els.timer.textContent = clock(0);
   clearTranscript();
   els.sidebar.classList.remove("open");
@@ -357,7 +470,7 @@ function openSocket() {
     ws.onopen = () => {
       ws.send(JSON.stringify({
         type: "start",
-        title: els.titleInput.value,
+        title: state.title,
         language: els.languageSelect.value,
       }));
     };
@@ -367,7 +480,7 @@ function openSocket() {
         case "started":
           state.sessionId = msg.session.id;
           state.speakers = msg.session.speakers;
-          els.titleInput.value = msg.session.title;
+          setTitle(msg.session.title);
           resolve(ws);
           break;
         case "partial":
@@ -444,27 +557,74 @@ function stopRecording() {
 
 // ---------------------------------------------------------------- title
 
-// The title can be edited at any time, recording or not. Before the first
-// recording it is simply sent with the "start" message.
-async function saveTitle() {
-  const title = els.titleInput.value.trim();
-  if (!state.sessionId || !title) return;
+function setTitle(title) {
+  state.title = title;
+  els.titleText.textContent = title || "Nouvelle réunion";
+  els.titleText.classList.toggle("placeholder", !title);
+}
+
+// The title can be renamed at any time, recording or not. Before the first
+// recording it is kept locally and sent with the "start" message.
+async function saveTitle(title) {
+  title = title.trim();
+  if (!title || title === state.title) return;
+  if (!state.sessionId) return setTitle(title);
   const res = await fetch(`/api/sessions/${state.sessionId}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ title }),
   });
   if (!res.ok) return toast("Impossible d'enregistrer le titre.");
-  els.titleInput.value = (await res.json()).title;
+  setTitle((await res.json()).title);
   loadSessions();
+}
+
+function startTitleEdit() {
+  const input = els.titleInput;
+  input.value = state.title;
+  els.titleText.hidden = true;
+  els.titleMenuBtn.hidden = true;
+  input.hidden = false;
+  input.focus();
+  input.select();
+  let done = false;
+  const finish = async (save) => {
+    if (done) return;
+    done = true;
+    input.removeEventListener("keydown", onKey);
+    input.removeEventListener("blur", onBlur);
+    if (save) await saveTitle(input.value);
+    input.hidden = true;
+    els.titleText.hidden = false;
+    els.titleMenuBtn.hidden = false;
+  };
+  const onKey = (e) => {
+    if (e.key === "Enter") finish(true);
+    if (e.key === "Escape") finish(false);
+  };
+  const onBlur = () => finish(true);
+  input.addEventListener("keydown", onKey);
+  input.addEventListener("blur", onBlur);
+}
+
+function openTitleMenu() {
+  const items = [{ icon: "edit", label: "Renommer la réunion", action: startTitleEdit }];
+  if (state.sessionId && !state.recording) {
+    const id = state.sessionId;
+    items.push({
+      icon: "delete",
+      label: "Supprimer la réunion",
+      confirm: "Confirmer la suppression",
+      danger: true,
+      action: () => removeSession(id),
+    });
+  }
+  openMenu(els.titleMenuBtn, items);
 }
 
 // ---------------------------------------------------------------- wiring
 
-els.titleInput.addEventListener("change", saveTitle);
-els.titleInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") els.titleInput.blur();
-});
+els.titleMenuBtn.addEventListener("click", openTitleMenu);
 els.recordBtn.addEventListener("click", () => {
   state.recording ? stopRecording() : startRecording();
 });
@@ -479,6 +639,7 @@ window.addEventListener("beforeunload", (e) => {
   if (state.recording) e.preventDefault();
 });
 
+setTitle("");
 updateRecordButton();
 updateEmptyState();
 pollHealth();

@@ -27,7 +27,13 @@
       <button class="icon-btn menu-btn" id="menuBtn" aria-label="Historique">
         <span class="material-symbols-outlined">menu</span>
       </button>
-      <input class="title-input" id="titleInput" type="text" placeholder="Titre de la réunion" maxlength="120">
+      <div class="title-wrap">
+        <h1 class="title-text" id="titleText"></h1>
+        <input class="title-input" id="titleInput" type="text" placeholder="Titre de la réunion" maxlength="120" hidden>
+        <button class="icon-btn" id="titleMenuBtn" aria-label="Actions sur la réunion" aria-haspopup="menu" title="Actions">
+          <span class="material-symbols-outlined">more_vert</span>
+        </button>
+      </div>
       <div class="toolbar-right">
         <label class="select">
           <span class="material-symbols-outlined">translate</span>
