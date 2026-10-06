@@ -63,7 +63,7 @@ Set in `.env` or as environment variables (prefix `STT_`):
 
 | Variable | Default | Notes |
 | --- | --- | --- |
-| `STT_MODEL_SIZE` | `small` | `base` is faster, `medium` / `large-v3-turbo` more accurate (GPU recommended) |
+| `STT_MODEL_SIZE` | `small` | `base` is faster, `medium` / `large-v3-turbo` more accurate (GPU recommended). Also accepts a local folder, e.g. `models/faster-whisper-small` downloaded from `Systran/faster-whisper-small` on Hugging Face |
 | `STT_DEVICE` | `cpu` | `cuda` for an NVIDIA GPU |
 | `STT_COMPUTE_TYPE` | `int8` | `float16` on GPU |
 | `STT_LANGUAGES` | `fr,en` | Languages allowed for automatic detection |

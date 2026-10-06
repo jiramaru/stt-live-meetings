@@ -39,7 +39,11 @@ class Transcription:
 
 class Transcriber(Protocol):
     def transcribe(
-        self, audio: np.ndarray, language: str | None = None, prompt: str | None = None
+        self,
+        audio: np.ndarray,
+        language: str | None = None,
+        prompt: str | None = None,
+        fast: bool = False,
     ) -> Transcription: ...
 
     def detect_language(self, audio: np.ndarray) -> str | None: ...
@@ -85,8 +89,17 @@ class WhisperTranscriber:
         return max(allowed, key=lambda item: item[1])[0]
 
     def transcribe(
-        self, audio: np.ndarray, language: str | None = None, prompt: str | None = None
+        self,
+        audio: np.ndarray,
+        language: str | None = None,
+        prompt: str | None = None,
+        fast: bool = False,
     ) -> Transcription:
+        """`fast` (used for partials) disables Whisper's temperature fallback.
+
+        The fallback re-decodes when the output looks unreliable; on CPU it can
+        multiply the cost of a short, unclear chunk several times over.
+        """
         if language is None:
             language = self.detect_language(audio) or (self.languages[0] if self.languages else None)
         with self._lock:
@@ -94,6 +107,8 @@ class WhisperTranscriber:
                 audio,
                 language=language,
                 beam_size=self.settings.beam_size,
+                temperature=0.0 if fast else [0.0, 0.4],
+                without_timestamps=True,
                 initial_prompt=prompt or None,
                 condition_on_previous_text=False,
                 vad_filter=False,  # segmentation already did VAD

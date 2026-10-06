@@ -9,7 +9,7 @@ STEP = 0.25
 
 
 def make(**overrides) -> tuple[StreamingSegmenter, FakeTranscriber]:
-    settings = Settings(step=STEP, min_silence=0.6, max_segment=8.0, **overrides)
+    settings = Settings(**{"step": STEP, "min_silence": 0.6, "max_segment": 8.0, **overrides})
     transcriber = FakeTranscriber()
     return StreamingSegmenter(transcriber, energy_vad, settings), transcriber
 
@@ -41,7 +41,7 @@ def test_pause_closes_segment_with_absolute_timestamps():
 
 def test_partials_are_emitted_while_speaking():
     seg, _ = make()
-    events = feed(seg, tone(2.0))
+    events = feed(seg, tone(3.0))
 
     partials = [e.text for e in events if e.type == "partial"]
     assert partials, "expected partial results during speech"
@@ -58,6 +58,17 @@ def test_two_utterances_give_two_segments_and_carry_context():
     assert segments[1].start > segments[0].end
     # The second final pass is primed with the first segment's text.
     assert transcriber.calls[-1][2].strip() == "speech 1.5s"
+
+
+def test_pause_is_found_even_when_steps_are_late():
+    # On a slow CPU, the next step can come after the following speaker has
+    # already started: the pause is then inside the buffer, not at its end.
+    seg, _ = make(step=2.0)
+    audio = np.concatenate([tone(1.5), silence(1.0), tone(1.0), silence(0.5)])
+    events = feed(seg, audio)
+
+    assert [s.text for s in finals(events)] == ["speech 1.5s"]
+    assert [s.text for s in finals(seg.flush())] == ["speech 1.0s"]
 
 
 def test_long_monologue_is_cut_at_max_segment():
@@ -89,3 +100,10 @@ def test_forced_language_is_passed_through():
     seg.language = "en"
     feed(seg, np.concatenate([tone(1.0), silence(1.0)]))
     assert transcriber.calls and all(lang == "en" for _, lang, _ in transcriber.calls)
+
+
+def test_partials_are_skipped_while_behind_real_time():
+    seg, transcriber = make()
+    seg.add_audio(tone(2.0))  # 8 steps' worth of audio arrives at once
+    assert seg.step() == []
+    assert not transcriber.calls

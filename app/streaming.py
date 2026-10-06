@@ -76,7 +76,7 @@ class StreamingSegmenter:
     _pending: int = 0  # samples received since the last step
     _next_id: int = 0
     _last_partial: str = ""
-    _segment_language: str | None = None
+    _partial_language: str | None = None  # language guess for partials in auto mode
     _context: str = ""
 
     def add_audio(self, chunk: np.ndarray) -> None:
@@ -87,32 +87,49 @@ class StreamingSegmenter:
         return self._pending >= int(self.settings.step * SAMPLE_RATE)
 
     def step(self) -> list[Event]:
+        # Audio piled up while the previous step ran: we are behind real time,
+        # so spend the CPU on final segments and skip partials until caught up.
+        behind = self._pending >= 2 * int(self.settings.step * SAMPLE_RATE)
         self._pending = 0
-        buf = self._buffer
-        speech = self.vad(buf) if len(buf) else []
+        events: list[Event] = []
+        while True:
+            speech = self.vad(self._buffer) if len(self._buffer) else []
+            if not speech:
+                # Nothing said: keep a short tail so the start of the next word survives.
+                self._drop(max(0, len(self._buffer) - PAD))
+                return events + self._partial("")
 
-        if not speech:
-            # Nothing said: keep a short tail so the start of the next word survives.
-            self._drop(max(0, len(buf) - PAD))
-            return self._partial("")
-
-        silence_tail = len(buf) - speech[-1][1]
-        if silence_tail >= int(self.settings.min_silence * SAMPLE_RATE):
-            return self._finalize(speech[0][0], speech[-1][1])
-
-        if len(buf) >= int(self.settings.max_segment * SAMPLE_RATE):
-            return self._finalize(speech[0][0], self._cut_point(speech, len(buf)))
-
-        return self._partial_from(speech[0][0])
+            end = self._utterance_end(speech)
+            if end is None and len(self._buffer) >= int(self.settings.max_segment * SAMPLE_RATE):
+                end = self._cut_point(speech, len(self._buffer))
+            if end is None:
+                return events + ([] if behind else self._partial_from(speech[0][0]))
+            # Loop: on a slow CPU several utterances can be waiting in the buffer.
+            events += self._finalize(speech[0][0], end)
 
     def flush(self) -> list[Event]:
         """Finalize whatever is left (called when the session stops)."""
-        speech = self.vad(self._buffer) if len(self._buffer) else []
-        if not speech:
-            return []
-        return self._finalize(speech[0][0], speech[-1][1])
+        events: list[Event] = []
+        while speech := (self.vad(self._buffer) if len(self._buffer) else []):
+            end = self._utterance_end(speech) or speech[-1][1]
+            events += self._finalize(speech[0][0], end)
+        return events
 
     # -- internals ---------------------------------------------------------
+
+    def _utterance_end(self, speech: list[tuple[int, int]]) -> int | None:
+        """End of the first speech run followed by a long enough pause.
+
+        The pause may sit anywhere in the buffer, not only at its end: when
+        transcription is slower than real time, the next speaker has often
+        started by the time the buffer is analysed again.
+        """
+        min_gap = int(self.settings.min_silence * SAMPLE_RATE)
+        starts = [start for start, _ in speech[1:]] + [len(self._buffer)]
+        for (_, end), next_start in zip(speech, starts):
+            if next_start - end >= min_gap:
+                return end
+        return None
 
     def _cut_point(self, speech: list[tuple[int, int]], length: int) -> int:
         """End of the last speech region followed by a pause, or the whole buffer."""
@@ -141,24 +158,28 @@ class StreamingSegmenter:
             self._next_id += 1
             self._context = (self._context + " " + result.text)[-PROMPT_CHARS:]
             events.append(Event(type="final", segment=segment))
+            self._partial_language = result.language
 
-        self._segment_language = None
         self._drop(end)
-        self._last_partial = ""
-        events.extend(self._partial("", force=True))
         return events
 
     def _partial_from(self, start: int) -> list[Event]:
         audio = self._buffer[max(0, start - PAD) :]
-        language = self.language or self._segment_language
+        language = self.language or self._partial_language
         if language is None:
-            # Detect once per segment; reuse it for later partials and the final pass.
-            language = self._segment_language = self.transcriber.detect_language(audio)
-        result = self.transcriber.transcribe(audio, language=language, prompt=self._context)
+            # First words of the meeting: detect once, later partials reuse the
+            # language of the previous final segment. A guess on less than two
+            # seconds is unreliable, and a wrong one makes Whisper translate.
+            if len(audio) < 2 * SAMPLE_RATE:
+                return []
+            language = self._partial_language = self.transcriber.detect_language(audio)
+        result = self.transcriber.transcribe(
+            audio, language=language, prompt=self._context, fast=True
+        )
         return self._partial(result.text)
 
-    def _partial(self, text: str, force: bool = False) -> list[Event]:
-        if text == self._last_partial and not force:
+    def _partial(self, text: str) -> list[Event]:
+        if text == self._last_partial:
             return []
         self._last_partial = text
         return [Event(type="partial", text=text)]
