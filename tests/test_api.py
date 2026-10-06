@@ -156,3 +156,33 @@ def test_audio_is_saved_and_deleted_with_the_session(client):
 
     client.delete(f"/api/sessions/{session_id}")
     assert client.get(f"/api/sessions/{session_id}/audio").status_code == 404
+
+
+def test_pause_and_resume_stay_in_the_same_meeting(client):
+    a, b = 220, 660
+    with client.websocket_connect("/ws/transcribe") as ws:
+        ws.send_json({"type": "start", "title": "Copil", "language": "auto"})
+        session_id = ws.receive_json()["session"]["id"]
+
+        ws.send_bytes(pcm16(tone(1.5, a)))  # still speaking when paused
+        ws.send_json({"type": "pause"})
+        msg = ws.receive_json()
+        while msg["type"] != "paused":
+            msg = ws.receive_json()
+        # The open sentence was finalized at the pause.
+        assert [s["text"] for s in msg["session"]["segments"]] == ["speech 1.5s"]
+
+        ws.send_json({"type": "resume"})
+        assert ws.receive_json()["type"] == "resumed"
+        ws.send_bytes(pcm16(np.concatenate([tone(1.5, b), silence(1.2), tone(1.5, a)])))
+        ws.send_json({"type": "stop"})
+        msg = ws.receive_json()
+        while msg["type"] != "stopped":
+            msg = ws.receive_json()
+
+    session = msg["session"]
+    assert session["id"] == session_id
+    assert [s["speaker"] for s in session["segments"]] == ["S1", "S2", "S1"]
+    # Timestamps follow the recorded audio: no gap for the pause.
+    assert session["segments"][1]["start"] < 2.0
+    assert [s["id"] for s in session["segments"]] == [0, 1, 2]

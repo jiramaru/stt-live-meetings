@@ -19,6 +19,7 @@ const els = {
   recordBtn: $("recordBtn"),
   recordIcon: $("recordIcon"),
   recordLabel: $("recordLabel"),
+  stopBtn: $("stopBtn"),
   exportGroup: $("exportGroup"),
   toast: $("toast"),
 };
@@ -34,6 +35,8 @@ const state = {
   lastSpeaker: undefined, // speaker of the last rendered segment
   ws: null,
   audio: null, // { ctx, stream, node, source }
+  paused: false, // meeting open, microphone off
+  elapsed: 0, // seconds recorded before the current run (pauses excluded)
   startedAt: 0,
   timerHandle: null,
 };
@@ -423,11 +426,14 @@ function newMeeting() {
 
 // ---------------------------------------------------------------- recording
 
+// Main button: Démarrer -> Pause <-> Reprendre. "Terminer" closes the meeting.
 function updateRecordButton() {
-  els.recordBtn.classList.toggle("recording", state.recording);
-  els.recordIcon.textContent = state.recording ? "stop" : "mic";
-  els.recordLabel.textContent = state.recording ? "Arrêter" : "Démarrer";
+  const live = state.recording && !state.paused;
+  els.recordBtn.classList.toggle("recording", live);
+  els.recordIcon.textContent = live ? "pause" : "mic";
+  els.recordLabel.textContent = live ? "Pause" : state.paused ? "Reprendre" : "Démarrer";
   els.recordBtn.disabled = !state.engineReady && !state.recording;
+  els.stopBtn.hidden = !state.recording;
   els.languageSelect.disabled = state.recording;
   els.newBtn.disabled = state.recording;
 }
@@ -493,6 +499,14 @@ function openSocket() {
         case "final":
           addSegment(msg.segment);
           break;
+        case "paused":
+          // Speaker labels were refined with hindsight: redraw with them.
+          renderSession(msg.session);
+          setPartial("En pause");
+          break;
+        case "resumed":
+          setPartial("");
+          break;
         case "stopped":
           setPartial("");
           // Speaker labels were refined with hindsight: redraw with them.
@@ -508,6 +522,7 @@ function openSocket() {
     ws.onerror = () => reject(new Error("Connexion au serveur impossible."));
     ws.onclose = () => {
       if (state.ws === ws && state.recording) {
+        state.paused = false;
         toast("Connexion perdue. La transcription jusqu'ici est enregistrée.");
         finishRecording();
       }
@@ -535,16 +550,50 @@ async function startRecording() {
     updateEmptyState();
     return;
   }
+  state.elapsed = 0;
+  startTimer();
+  loadSessions();
+}
+
+function startTimer() {
   state.startedAt = performance.now();
   state.timerHandle = setInterval(() => {
-    els.timer.textContent = clock((performance.now() - state.startedAt) / 1000);
+    els.timer.textContent = clock(state.elapsed + (performance.now() - state.startedAt) / 1000);
   }, 500);
-  loadSessions();
+}
+
+function stopTimer() {
+  if (!state.timerHandle) return;
+  clearInterval(state.timerHandle);
+  state.timerHandle = null;
+  state.elapsed += (performance.now() - state.startedAt) / 1000;
+}
+
+function pauseRecording() {
+  state.paused = true;
+  stopAudio(); // releases the microphone while paused
+  stopTimer();
+  if (state.ws?.readyState === WebSocket.OPEN) state.ws.send(JSON.stringify({ type: "pause" }));
+  setPartial("Mise en pause…");
+  updateRecordButton();
+}
+
+async function resumeRecording() {
+  try {
+    await startAudio();
+  } catch (err) {
+    return toast(err.name === "NotAllowedError" ? "Accès au micro refusé." : err.message);
+  }
+  state.paused = false;
+  if (state.ws?.readyState === WebSocket.OPEN) state.ws.send(JSON.stringify({ type: "resume" }));
+  startTimer();
+  updateRecordButton();
 }
 
 function finishRecording() {
   state.recording = false;
-  clearInterval(state.timerHandle);
+  state.paused = false;
+  stopTimer();
   stopAudio();
   updateRecordButton();
   updateEmptyState();
@@ -638,8 +687,11 @@ function openTitleMenu() {
 
 els.titleMenuBtn.addEventListener("click", openTitleMenu);
 els.recordBtn.addEventListener("click", () => {
-  state.recording ? stopRecording() : startRecording();
+  if (!state.recording) startRecording();
+  else if (state.paused) resumeRecording();
+  else pauseRecording();
 });
+els.stopBtn.addEventListener("click", stopRecording);
 els.newBtn.addEventListener("click", newMeeting);
 els.menuBtn.addEventListener("click", () => els.sidebar.classList.toggle("open"));
 els.exportGroup.addEventListener("click", (e) => {

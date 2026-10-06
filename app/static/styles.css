@@ -255,6 +255,9 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .record-btn.recording .material-symbols-outlined { animation: pulse 1.4s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: .4; } }
 
+.stop-btn { padding: 9px 16px; border-radius: 999px; font-size: 14px; font-weight: 600; }
+.stop-btn:hover { background: var(--surface-2); }
+
 .export { margin-left: auto; display: flex; align-items: center; gap: 4px; }
 .export-label { font-size: 13px; color: var(--muted); margin-right: 4px; }
 

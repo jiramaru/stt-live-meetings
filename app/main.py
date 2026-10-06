@@ -3,10 +3,13 @@
 WebSocket protocol (/ws/transcribe):
   client -> {"type": "start", "title": str, "language": "auto" | "fr" | "en"}
   client -> binary frames: 16 kHz mono PCM, signed 16-bit little endian
+  client -> {"type": "pause"} / {"type": "resume"}   (same meeting, same speakers)
   client -> {"type": "stop"}
   server -> {"type": "started", "session": {...}}
   server -> {"type": "partial", "text": str}
   server -> {"type": "final", "segment": {...}}
+  server -> {"type": "paused", "session": {...}}    (speaker labels refined)
+  server -> {"type": "resumed"}
   server -> {"type": "stopped", "session": {...}}   (speaker labels refined)
   server -> {"type": "error", "message": str}
 """
@@ -14,6 +17,7 @@ WebSocket protocol (/ws/transcribe):
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import threading
@@ -241,29 +245,45 @@ async def run_session(
     )
     await ws.send_json({"type": "started", "session": session})
 
-    # Audio is queued here by the receiver and handed to the segmenter by the
-    # worker, so the segmenter is never touched while a step runs in a thread.
-    inbox: list[np.ndarray] = []
+    # Audio and pause/resume commands are queued here by the receiver and
+    # handled in order by the worker, so the segmenter is never touched while
+    # a step runs in a thread.
+    inbox: list[np.ndarray | str] = []
     wake = asyncio.Event()
     stopped = asyncio.Event()
+    paused = False
 
     async def receive():
+        nonlocal paused
         try:
             while True:
                 message = await ws.receive()
                 if message["type"] == "websocket.disconnect":
                     break
                 if message.get("bytes"):
+                    if paused:
+                        continue  # in flight when the pause was sent
                     if recording:
                         recording.writeframes(message["bytes"])
                     pcm = np.frombuffer(message["bytes"], dtype="<i2")
                     inbox.append(pcm.astype(np.float32) / 32768.0)
-                    wake.set()
-                elif message.get("text") and '"stop"' in message["text"]:
-                    break
+                elif message.get("text"):
+                    command = json.loads(message["text"]).get("type")
+                    if command == "stop":
+                        break
+                    if command in ("pause", "resume"):
+                        paused = command == "pause"
+                        inbox.append(command)
+                wake.set()
         finally:
             stopped.set()
             wake.set()
+
+    def refine_speakers():
+        if tracker:
+            labels = tracker.refine()
+            for segment in session["segments"]:
+                segment["speaker"] = labels.get(segment["id"], segment["speaker"])
 
     async def emit(events):
         for event in events:
@@ -274,26 +294,36 @@ async def run_session(
             else:
                 await ws.send_json({"type": "partial", "text": event.text})
 
+    async def drain_inbox():
+        while inbox:
+            item = inbox.pop(0)
+            if isinstance(item, np.ndarray):
+                segmenter.add_audio(item)
+            elif item == "pause":
+                # Finish the sentence in progress, then relabel with hindsight.
+                await emit(await asyncio.to_thread(segmenter.flush))
+                refine_speakers()
+                store.save(session)
+                await ws.send_json({"type": "paused", "session": session})
+            elif item == "resume":
+                await ws.send_json({"type": "resumed"})
+
     receiver = asyncio.create_task(receive())
     try:
         while not stopped.is_set():
             await wake.wait()
             wake.clear()
-            while inbox:
-                segmenter.add_audio(inbox.pop(0))
+            await drain_inbox()
             if segmenter.ready() and not stopped.is_set():
                 await emit(await asyncio.to_thread(segmenter.step))
-        while inbox:
-            segmenter.add_audio(inbox.pop(0))
+        inbox[:] = [item for item in inbox if isinstance(item, np.ndarray)]
+        await drain_inbox()
         await emit(await asyncio.to_thread(segmenter.flush))
     finally:
         receiver.cancel()
         if recording:
             recording.close()
-        if tracker:
-            labels = tracker.refine()
-            for segment in session["segments"]:
-                segment["speaker"] = labels.get(segment["id"], segment["speaker"])
+        refine_speakers()
         session["ended_at"] = datetime.now(timezone.utc).isoformat()
         store.save(session)
         live.pop(session["id"], None)
