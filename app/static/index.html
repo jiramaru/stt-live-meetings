@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Transcription de réunion</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,300..500,0..1,0&display=block">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-head">
+      <span class="material-symbols-outlined brand-icon">graphic_eq</span>
+      <span class="brand">Transcription live</span>
+    </div>
+    <button class="btn btn-ghost new-btn" id="newBtn">
+      <span class="material-symbols-outlined">add</span> Nouvelle réunion
+    </button>
+    <div class="sidebar-label">Historique</div>
+    <ul class="session-list" id="sessionList"></ul>
+  </aside>
+
+  <main class="main">
+    <header class="toolbar">
+      <button class="icon-btn menu-btn" id="menuBtn" aria-label="Historique">
+        <span class="material-symbols-outlined">menu</span>
+      </button>
+      <input class="title-input" id="titleInput" type="text" placeholder="Titre de la réunion" maxlength="120">
+      <div class="toolbar-right">
+        <label class="select">
+          <span class="material-symbols-outlined">translate</span>
+          <select id="languageSelect" aria-label="Langue">
+            <option value="auto">Auto (FR / EN)</option>
+            <option value="fr">Français</option>
+            <option value="en">English</option>
+          </select>
+        </label>
+        <div class="engine" id="engineStatus" title="État du moteur">
+          <span class="dot"></span><span class="engine-label">Chargement…</span>
+        </div>
+      </div>
+    </header>
+
+    <section class="transcript" id="transcript" aria-live="polite">
+      <div class="empty" id="emptyState">
+        <span class="material-symbols-outlined">mic</span>
+        <p>Démarrez l'enregistrement pour transcrire la réunion en direct.</p>
+        <p class="hint">Placez le micro au centre de la salle. Le texte apparaît quelques secondes après la parole.</p>
+      </div>
+      <ol class="segments" id="segments"></ol>
+      <p class="partial" id="partial"></p>
+    </section>
+
+    <footer class="controls">
+      <div class="meter" aria-hidden="true"><div class="meter-fill" id="meterFill"></div></div>
+      <span class="timer" id="timer">00:00:00</span>
+      <button class="record-btn" id="recordBtn">
+        <span class="material-symbols-outlined" id="recordIcon">mic</span>
+        <span id="recordLabel">Démarrer</span>
+      </button>
+      <div class="export" id="exportGroup">
+        <span class="export-label">Exporter</span>
+        <button class="btn btn-ghost" data-format="docx"><span class="material-symbols-outlined">description</span>Word</button>
+        <button class="btn btn-ghost" data-format="txt"><span class="material-symbols-outlined">article</span>TXT</button>
+        <button class="btn btn-ghost" data-format="srt"><span class="material-symbols-outlined">subtitles</span>SRT</button>
+        <button class="btn btn-ghost" data-format="md"><span class="material-symbols-outlined">code</span>MD</button>
+      </div>
+    </footer>
+    <div class="toast" id="toast" role="status"></div>
+  </main>
+
+  <script src="/static/app.js" type="module"></script>
+</body>
+</html>
