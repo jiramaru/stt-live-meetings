@@ -19,6 +19,7 @@ from typing import Callable
 import numpy as np
 
 from .config import SAMPLE_RATE, Settings
+from .speakers import SpeakerTracker
 from .transcriber import Transcriber
 
 # (start, end) sample offsets of speech regions within the given audio
@@ -46,6 +47,7 @@ class Segment:
     end: float
     text: str
     language: str | None
+    speaker: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -54,6 +56,7 @@ class Segment:
             "end": round(self.end, 2),
             "text": self.text,
             "language": self.language,
+            "speaker": self.speaker,
         }
 
 
@@ -70,6 +73,7 @@ class StreamingSegmenter:
     vad: VadFn
     settings: Settings
     language: str | None = None  # None = auto-detect among allowed languages
+    speakers: SpeakerTracker | None = None  # None = no speaker labels
 
     _buffer: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.float32))
     _offset: int = 0  # absolute sample index of _buffer[0]
@@ -143,9 +147,11 @@ class StreamingSegmenter:
         audio = self._buffer[start:end]
         events: list[Event] = []
 
-        # In auto mode the full segment is re-detected: more reliable than the
-        # guess made on its first second.
-        result = self.transcriber.transcribe(audio, language=self.language, prompt=self._context)
+        # In auto mode the previous segment's language is tried first; the
+        # transcriber re-detects when the result looks unreliable.
+        result = self.transcriber.transcribe(
+            audio, language=self.language, prompt=self._context, hint=self._partial_language
+        )
 
         if result.text:
             segment = Segment(
@@ -155,6 +161,8 @@ class StreamingSegmenter:
                 text=result.text,
                 language=result.language,
             )
+            if self.speakers:
+                segment.speaker = self.speakers.assign(segment.id, audio)
             self._next_id += 1
             self._context = (self._context + " " + result.text)[-PROMPT_CHARS:]
             events.append(Event(type="final", segment=segment))

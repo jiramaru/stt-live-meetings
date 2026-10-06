@@ -26,6 +26,8 @@ const state = {
   recording: false,
   sessionId: null, // session shown in the main pane
   segmentCount: 0,
+  speakers: {}, // speaker id -> custom name
+  lastSpeaker: undefined, // speaker of the last rendered segment
   ws: null,
   audio: null, // { ctx, stream, node, source }
   startedAt: 0,
@@ -70,7 +72,75 @@ function clearTranscript() {
   els.segments.replaceChildren();
   els.partial.textContent = "";
   state.segmentCount = 0;
+  state.lastSpeaker = undefined;
   updateEmptyState();
+}
+
+function renderSession(session) {
+  const scroll = els.transcript.scrollTop;
+  state.speakers = session.speakers || {};
+  clearTranscript();
+  session.segments.forEach(addSegment);
+  els.transcript.scrollTop = scroll;
+}
+
+// ---------------------------------------------------------------- speakers
+
+const SPEAKER_COLORS = 8;
+
+function speakerName(id) {
+  return state.speakers[id] || `Intervenant ${id.slice(1)}`;
+}
+
+function speakerChip(id) {
+  const chip = document.createElement("button");
+  chip.className = "speaker-chip";
+  chip.dataset.speaker = id;
+  chip.style.setProperty("--spk", `var(--spk-${(parseInt(id.slice(1), 10) - 1) % SPEAKER_COLORS + 1})`);
+  chip.title = "Cliquer pour renommer";
+  chip.append(icon("person"), document.createTextNode(speakerName(id)));
+  chip.addEventListener("click", () => startRename(chip));
+  return chip;
+}
+
+function refreshSpeakerChips() {
+  for (const chip of els.segments.querySelectorAll(".speaker-chip")) {
+    chip.replaceWith(speakerChip(chip.dataset.speaker));
+  }
+}
+
+// Inline rename: the chip becomes a text field; Enter or leaving it saves,
+// Escape cancels. The new name applies to every turn of that speaker.
+function startRename(chip) {
+  const id = chip.dataset.speaker;
+  const input = document.createElement("input");
+  input.className = "speaker-input";
+  input.value = state.speakers[id] || "";
+  input.placeholder = speakerName(id);
+  input.maxLength = 80;
+  input.style.setProperty("--spk", chip.style.getPropertyValue("--spk"));
+  let done = false;
+  const finish = async (save) => {
+    if (done) return;
+    done = true;
+    if (save && input.value.trim() !== (state.speakers[id] || "")) {
+      const res = await fetch(`/api/sessions/${state.sessionId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ speakers: { [id]: input.value } }),
+      });
+      if (res.ok) state.speakers = (await res.json()).speakers;
+      else toast("Impossible de renommer l'intervenant.");
+    }
+    refreshSpeakerChips();
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") finish(true);
+    if (e.key === "Escape") finish(false);
+  });
+  input.addEventListener("blur", () => finish(true));
+  chip.replaceWith(input);
+  input.focus();
 }
 
 function updateEmptyState() {
@@ -81,6 +151,13 @@ function updateEmptyState() {
 
 function addSegment(segment) {
   const follow = isNearBottom();
+  if (segment.speaker && segment.speaker !== state.lastSpeaker) {
+    const turn = document.createElement("li");
+    turn.className = "turn";
+    turn.append(speakerChip(segment.speaker));
+    els.segments.append(turn);
+  }
+  state.lastSpeaker = segment.speaker;
   const li = document.createElement("li");
   li.className = "segment";
   const time = document.createElement("time");
@@ -193,8 +270,8 @@ async function openSession(id) {
   state.sessionId = id;
   els.titleInput.value = session.title;
   els.timer.textContent = clock(session.segments.at(-1)?.end ?? 0);
-  clearTranscript();
-  session.segments.forEach(addSegment);
+  renderSession(session);
+  els.transcript.scrollTop = 0;
   els.sidebar.classList.remove("open");
   loadSessions();
 }
@@ -221,6 +298,7 @@ async function deleteSession(id, button) {
 function newMeeting() {
   if (state.recording) return;
   state.sessionId = null;
+  state.speakers = {};
   els.titleInput.value = "";
   els.timer.textContent = clock(0);
   clearTranscript();
@@ -236,7 +314,6 @@ function updateRecordButton() {
   els.recordLabel.textContent = state.recording ? "Arrêter" : "Démarrer";
   els.recordBtn.disabled = !state.engineReady && !state.recording;
   els.languageSelect.disabled = state.recording;
-  els.titleInput.disabled = state.recording;
   els.newBtn.disabled = state.recording;
 }
 
@@ -289,6 +366,7 @@ function openSocket() {
       switch (msg.type) {
         case "started":
           state.sessionId = msg.session.id;
+          state.speakers = msg.session.speakers;
           els.titleInput.value = msg.session.title;
           resolve(ws);
           break;
@@ -300,6 +378,8 @@ function openSocket() {
           break;
         case "stopped":
           setPartial("");
+          // Speaker labels were refined with hindsight: redraw with them.
+          renderSession(msg.session);
           loadSessions();
           break;
         case "error":
@@ -321,6 +401,7 @@ function openSocket() {
 async function startRecording() {
   clearTranscript();
   state.sessionId = null;
+  state.speakers = {};
   state.recording = true;
   updateRecordButton();
   updateEmptyState();
@@ -361,8 +442,29 @@ function stopRecording() {
   }
 }
 
+// ---------------------------------------------------------------- title
+
+// The title can be edited at any time, recording or not. Before the first
+// recording it is simply sent with the "start" message.
+async function saveTitle() {
+  const title = els.titleInput.value.trim();
+  if (!state.sessionId || !title) return;
+  const res = await fetch(`/api/sessions/${state.sessionId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+  if (!res.ok) return toast("Impossible d'enregistrer le titre.");
+  els.titleInput.value = (await res.json()).title;
+  loadSessions();
+}
+
 // ---------------------------------------------------------------- wiring
 
+els.titleInput.addEventListener("change", saveTitle);
+els.titleInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") els.titleInput.blur();
+});
 els.recordBtn.addEventListener("click", () => {
   state.recording ? stopRecording() : startRecording();
 });

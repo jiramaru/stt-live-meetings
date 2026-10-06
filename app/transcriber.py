@@ -30,11 +30,18 @@ _HALLUCINATIONS = [
 ]
 _HALLUCINATION_RE = re.compile(r"^\s*(" + "|".join(_HALLUCINATIONS) + r")\s*$", re.IGNORECASE)
 
+# Average token log-probability below which a transcription made with a guessed
+# language is double-checked. Given the wrong language, Whisper tends to
+# translate rather than fail; on real recordings (FR and EN) that scored -0.46
+# or lower, while the right language scored between -0.11 and -0.56.
+LANGUAGE_CHECK_LOGPROB = -0.4
+
 
 @dataclass
 class Transcription:
     text: str
     language: str | None
+    logprob: float = 0.0  # average token log-probability (confidence), -inf if empty
 
 
 class Transcriber(Protocol):
@@ -44,6 +51,7 @@ class Transcriber(Protocol):
         language: str | None = None,
         prompt: str | None = None,
         fast: bool = False,
+        hint: str | None = None,
     ) -> Transcription: ...
 
     def detect_language(self, audio: np.ndarray) -> str | None: ...
@@ -94,14 +102,31 @@ class WhisperTranscriber:
         language: str | None = None,
         prompt: str | None = None,
         fast: bool = False,
+        hint: str | None = None,
     ) -> Transcription:
-        """`fast` (used for partials) disables Whisper's temperature fallback.
+        """Transcribe in `language`, or detect it when None.
 
-        The fallback re-decodes when the output looks unreliable; on CPU it can
+        `hint` (auto mode) is the likely language, usually that of the previous
+        segment. It is tried first and the costly detection pass (a whole extra
+        run of the encoder) only happens when the result looks unreliable.
+
+        `fast` (used for partials) disables Whisper's temperature fallback,
+        which re-decodes when the output looks unreliable; on CPU it can
         multiply the cost of a short, unclear chunk several times over.
         """
+        if language is None and hint:
+            result = self._run(audio, hint, prompt, fast)
+            if result.logprob >= LANGUAGE_CHECK_LOGPROB:
+                return result
+            detected = self.detect_language(audio)
+            if detected in (None, hint):
+                return result
+            return self._run(audio, detected, prompt, fast)
         if language is None:
             language = self.detect_language(audio) or (self.languages[0] if self.languages else None)
+        return self._run(audio, language, prompt, fast)
+
+    def _run(self, audio: np.ndarray, language: str | None, prompt: str | None, fast: bool):
         with self._lock:
             segments, info = self.model.transcribe(
                 audio,
@@ -115,9 +140,12 @@ class WhisperTranscriber:
                 no_speech_threshold=0.6,
                 log_prob_threshold=-1.0,
             )
-            parts = [
-                s.text
-                for s in segments
-                if not (s.no_speech_prob > 0.6 and s.avg_logprob < -1.0)
+            kept = [
+                s for s in segments if not (s.no_speech_prob > 0.6 and s.avg_logprob < -1.0)
             ]
-        return Transcription(text=clean_text(" ".join(parts)), language=info.language)
+        logprob = float("-inf")  # nothing recognised: no confidence at all
+        if kept:
+            tokens = [max(1, len(s.tokens)) for s in kept]
+            logprob = float(np.average([s.avg_logprob for s in kept], weights=tokens))
+        text = clean_text(" ".join(s.text for s in kept))
+        return Transcription(text=text, language=info.language, logprob=logprob)

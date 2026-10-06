@@ -28,6 +28,7 @@ class SessionStore:
             "language": language,
             "started_at": datetime.now(timezone.utc).isoformat(),
             "ended_at": None,
+            "speakers": {},  # speaker id -> name given by the user
             "segments": [],
         }
         self.save(session)
@@ -43,7 +44,9 @@ class SessionStore:
         path = self._path(session_id)
         if not path.exists():
             raise KeyError(session_id)
-        return json.loads(path.read_text(encoding="utf-8"))
+        session = json.loads(path.read_text(encoding="utf-8"))
+        session.setdefault("speakers", {})  # sessions recorded before speaker labels
+        return session
 
     def list(self) -> list[dict]:
         sessions = []

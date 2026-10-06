@@ -37,3 +37,19 @@ def test_hallucinations_are_removed():
     assert clean_text("Merci d'avoir regardé !") == ""
     assert clean_text("...") == ""
     assert clean_text("  Merci   pour  ce point. ") == "Merci pour ce point."
+
+
+def test_speaker_names_in_exports():
+    session = {
+        **SESSION,
+        "speakers": {"S1": "M. le Ministre"},
+        "segments": [
+            {**SESSION["segments"][0], "speaker": "S1"},
+            {**SESSION["segments"][1], "speaker": "S2"},
+        ],
+    }
+    txt = to_txt(session)
+    assert "M. le Ministre :\n[00:00:01] Bonjour à tous." in txt
+    assert "Intervenant 2 :\n[01:02:05] Let's start." in txt
+    assert "M. le Ministre : Bonjour à tous." in to_srt(session)
+    assert "### Intervenant 2" in to_markdown(session)

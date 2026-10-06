@@ -23,6 +23,12 @@ class Settings(BaseSettings):
     max_segment: float = 15.0  # force a cut beyond this length
     vad_threshold: float = 0.5
 
+    # Speaker labels
+    diarization: bool = True
+    speaker_model: Path = Path("models/speaker/wespeaker_en_voxceleb_resnet34_LM.onnx")
+    speaker_threshold: float = 0.5  # similarity to join a speaker; lower = fewer speakers
+    speaker_merge_threshold: float = 0.7  # similarity to merge two speakers at the end
+
     data_dir: Path = Path("data")
 
     @property

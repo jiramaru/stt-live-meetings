@@ -7,7 +7,7 @@ WebSocket protocol (/ws/transcribe):
   server -> {"type": "started", "session": {...}}
   server -> {"type": "partial", "text": str}
   server -> {"type": "final", "segment": {...}}
-  server -> {"type": "stopped", "session_id": str}
+  server -> {"type": "stopped", "session": {...}}   (speaker labels refined)
   server -> {"type": "error", "message": str}
 """
 
@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import threading
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -25,24 +27,33 @@ import numpy as np
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 from .config import Settings, get_settings
 from .exporters import EXPORTERS
+from .speakers import Embedder, SherpaEmbedder, SpeakerTracker
 from .storage import SessionStore
 from .streaming import StreamingSegmenter, VadFn, silero_vad
 from .transcriber import Transcriber, WhisperTranscriber
 
 log = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).parent / "static"
+SPEAKER_ID_RE = re.compile(r"^S\d{1,4}$")
+
+
+@dataclass
+class Components:
+    transcriber: Transcriber
+    vad: VadFn
+    embedder: Embedder | None = None  # None = no speaker labels
 
 
 class Engine:
-    """Holds the model, loaded in the background so the server starts at once."""
+    """Holds the models, loaded in the background so the server starts at once."""
 
-    def __init__(self, load: Callable[[], tuple[Transcriber, VadFn]]):
+    def __init__(self, load: Callable[[], Components]):
         self._load = load
-        self.transcriber: Transcriber | None = None
-        self.vad: VadFn | None = None
+        self.parts: Components | None = None
         self.status = "loading"
         self.error: str | None = None
 
@@ -51,7 +62,7 @@ class Engine:
 
     def _run(self) -> None:
         try:
-            self.transcriber, self.vad = self._load()
+            self.parts = self._load()
             self.status = "ready"
             log.info("Speech engine ready")
         except Exception as exc:  # surfaced through /api/health
@@ -59,17 +70,39 @@ class Engine:
             self.status, self.error = "error", str(exc)
 
 
-def default_loader(settings: Settings) -> Callable[[], tuple[Transcriber, VadFn]]:
-    return lambda: (WhisperTranscriber(settings), silero_vad(settings.vad_threshold))
+def default_loader(settings: Settings) -> Callable[[], Components]:
+    def load() -> Components:
+        embedder = None
+        if settings.diarization:
+            if settings.speaker_model.exists():
+                embedder = SherpaEmbedder(str(settings.speaker_model))
+            else:
+                log.warning(
+                    "Speaker model %s not found: speaker labels disabled", settings.speaker_model
+                )
+        return Components(
+            WhisperTranscriber(settings), silero_vad(settings.vad_threshold), embedder
+        )
+
+    return load
+
+
+class SessionUpdate(BaseModel):
+    title: str | None = Field(None, max_length=120)
+    speakers: dict[str, str] | None = None  # speaker id -> display name ("" = default)
 
 
 def create_app(
     settings: Settings | None = None,
-    loader: Callable[[], tuple[Transcriber, VadFn]] | None = None,
+    loader: Callable[[], Components] | None = None,
 ) -> FastAPI:
     settings = settings or get_settings()
     engine = Engine(loader or default_loader(settings))
     store = SessionStore(settings.data_dir)
+    # Sessions being recorded, by id. Edits go through these dicts so the
+    # recorder's next save does not overwrite them. Every access happens on
+    # the event loop (async handlers), so no lock is needed.
+    live: dict[str, dict] = {}
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -88,6 +121,7 @@ def create_app(
             "model": settings.model_size,
             "device": settings.device,
             "languages": settings.language_list,
+            "diarization": bool(engine.parts and engine.parts.embedder),
         }
 
     @app.get("/api/sessions")
@@ -100,6 +134,25 @@ def create_app(
             return store.get(session_id)
         except KeyError:
             raise HTTPException(404, "Session introuvable")
+
+    @app.patch("/api/sessions/{session_id}")
+    async def update_session(session_id: str, update: SessionUpdate):
+        try:
+            session = live.get(session_id) or store.get(session_id)
+        except KeyError:
+            raise HTTPException(404, "Session introuvable")
+        if update.title is not None:
+            session["title"] = update.title.strip() or session["title"]
+        for speaker, name in (update.speakers or {}).items():
+            if not SPEAKER_ID_RE.match(speaker):
+                raise HTTPException(400, f"Intervenant inconnu : {speaker}")
+            name = name.strip()[:80]
+            if name:
+                session["speakers"][speaker] = name
+            else:
+                session["speakers"].pop(speaker, None)
+        store.save(session)
+        return session
 
     @app.delete("/api/sessions/{session_id}", status_code=204)
     def delete_session(session_id: str):
@@ -135,7 +188,7 @@ def create_app(
             await ws.close()
             return
         try:
-            await run_session(ws, engine, store, settings)
+            await run_session(ws, engine.parts, store, live, settings)
         except (WebSocketDisconnect, RuntimeError):
             pass  # client left; the session was saved by run_session
 
@@ -147,7 +200,9 @@ def create_app(
     return app
 
 
-async def run_session(ws: WebSocket, engine: Engine, store: SessionStore, settings: Settings):
+async def run_session(
+    ws: WebSocket, parts: Components, store: SessionStore, live: dict, settings: Settings
+):
     start = await ws.receive_json()
     if start.get("type") != "start":
         await ws.send_json({"type": "error", "message": "Message 'start' attendu"})
@@ -155,7 +210,17 @@ async def run_session(ws: WebSocket, engine: Engine, store: SessionStore, settin
     language = start.get("language")
     language = language if language in settings.language_list else None
     session = store.create(start.get("title", ""), language)
-    segmenter = StreamingSegmenter(engine.transcriber, engine.vad, settings, language=language)
+    live[session["id"]] = session
+    tracker = None
+    if parts.embedder:
+        tracker = SpeakerTracker(
+            parts.embedder,
+            threshold=settings.speaker_threshold,
+            merge_threshold=settings.speaker_merge_threshold,
+        )
+    segmenter = StreamingSegmenter(
+        parts.transcriber, parts.vad, settings, language=language, speakers=tracker
+    )
     await ws.send_json({"type": "started", "session": session})
 
     # Audio is queued here by the receiver and handed to the segmenter by the
@@ -203,10 +268,15 @@ async def run_session(ws: WebSocket, engine: Engine, store: SessionStore, settin
         await emit(await asyncio.to_thread(segmenter.flush))
     finally:
         receiver.cancel()
+        if tracker:
+            labels = tracker.refine()
+            for segment in session["segments"]:
+                segment["speaker"] = labels.get(segment["id"], segment["speaker"])
         session["ended_at"] = datetime.now(timezone.utc).isoformat()
         store.save(session)
+        live.pop(session["id"], None)
 
-    await ws.send_json({"type": "stopped", "session_id": session["id"]})
+    await ws.send_json({"type": "stopped", "session": session})
     await ws.close()
 
 
