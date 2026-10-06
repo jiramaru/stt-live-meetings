@@ -48,16 +48,14 @@ def test_partials_are_emitted_while_speaking():
     assert not finals(events)
 
 
-def test_two_utterances_give_two_segments_and_carry_context():
-    seg, transcriber = make()
+def test_two_utterances_give_two_segments():
+    seg, _ = make()
     audio = np.concatenate([tone(1.5), silence(1.0), tone(1.0), silence(1.0)])
     segments = finals(feed(seg, audio))
 
     assert [s.text for s in segments] == ["speech 1.5s", "speech 1.0s"]
     assert [s.id for s in segments] == [0, 1]
     assert segments[1].start > segments[0].end
-    # The second final pass is primed with the first segment's text.
-    assert transcriber.calls[-1][2].strip() == "speech 1.5s"
 
 
 def test_pause_is_found_even_when_steps_are_late():
@@ -99,7 +97,7 @@ def test_forced_language_is_passed_through():
     seg, transcriber = make()
     seg.language = "en"
     feed(seg, np.concatenate([tone(1.0), silence(1.0)]))
-    assert transcriber.calls and all(lang == "en" for _, lang, _ in transcriber.calls)
+    assert transcriber.calls and all(lang == "en" for _, lang in transcriber.calls)
 
 
 def test_partials_are_skipped_while_behind_real_time():

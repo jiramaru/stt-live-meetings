@@ -143,3 +143,16 @@ def test_rename_rejects_unknown_speaker_ids(client):
     session_id, _ = record(client, silence(0.5))
     r = client.patch(f"/api/sessions/{session_id}", json={"speakers": {"../x": "Bob"}})
     assert r.status_code == 400
+
+
+def test_audio_is_saved_and_deleted_with_the_session(client):
+    audio = np.concatenate([tone(1.5), silence(1.2)])
+    session_id, _ = record(client, audio)
+
+    r = client.get(f"/api/sessions/{session_id}/audio")
+    assert r.status_code == 200
+    assert r.content[:4] == b"RIFF"
+    assert len(r.content) == 44 + len(pcm16(audio))  # header + every sample sent
+
+    client.delete(f"/api/sessions/{session_id}")
+    assert client.get(f"/api/sessions/{session_id}/audio").status_code == 404

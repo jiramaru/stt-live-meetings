@@ -29,12 +29,18 @@ _HALLUCINATIONS = [
     r"\.+",
 ]
 _HALLUCINATION_RE = re.compile(r"^\s*(" + "|".join(_HALLUCINATIONS) + r")\s*$", re.IGNORECASE)
+# The same 1-6 words repeated 3+ times in a row: Whisper's decoding loop.
+_LOOP_RE = re.compile(r"\b((?:\S+\s+){0,5}?\S+?)(?:[\s,.!?;]+\1\b){2,}", re.IGNORECASE)
 
 # Average token log-probability below which a transcription made with a guessed
 # language is double-checked. Given the wrong language, Whisper tends to
 # translate rather than fail; on real recordings (FR and EN) that scored -0.46
 # or lower, while the right language scored between -0.11 and -0.56.
 LANGUAGE_CHECK_LOGPROB = -0.4
+# Language detection on a few words is unreliable: below this length the
+# previous segment's language is kept, and a switch needs a confident detection.
+MIN_DETECT_SECONDS = 3.0
+MIN_SWITCH_PROBABILITY = 0.7
 
 
 @dataclass
@@ -49,7 +55,6 @@ class Transcriber(Protocol):
         self,
         audio: np.ndarray,
         language: str | None = None,
-        prompt: str | None = None,
         fast: bool = False,
         hint: str | None = None,
     ) -> Transcription: ...
@@ -59,6 +64,7 @@ class Transcriber(Protocol):
 
 def clean_text(text: str) -> str:
     text = " ".join(text.split())
+    text = _LOOP_RE.sub(r"\1", text)
     if _HALLUCINATION_RE.match(text):
         return ""
     return text
@@ -87,20 +93,26 @@ class WhisperTranscriber:
 
     def detect_language(self, audio: np.ndarray) -> str | None:
         """Most likely language among the allowed ones."""
+        lang, _ = self._detect(audio)
+        return lang
+
+    def _detect(self, audio: np.ndarray) -> tuple[str | None, float]:
+        """(language, probability among the allowed languages)."""
         if len(audio) < SAMPLE_RATE:
-            return None
+            return None, 0.0
         with self._lock:
             _, _, probs = self.model.detect_language(audio)
         allowed = [(lang, p) for lang, p in probs if lang in self.languages]
         if not allowed:
-            return self.languages[0] if self.languages else None
-        return max(allowed, key=lambda item: item[1])[0]
+            return (self.languages[0] if self.languages else None), 0.0
+        total = sum(p for _, p in allowed) or 1.0
+        lang, p = max(allowed, key=lambda item: item[1])
+        return lang, p / total
 
     def transcribe(
         self,
         audio: np.ndarray,
         language: str | None = None,
-        prompt: str | None = None,
         fast: bool = False,
         hint: str | None = None,
     ) -> Transcription:
@@ -115,26 +127,27 @@ class WhisperTranscriber:
         multiply the cost of a short, unclear chunk several times over.
         """
         if language is None and hint:
-            result = self._run(audio, hint, prompt, fast)
-            if result.logprob >= LANGUAGE_CHECK_LOGPROB:
+            result = self._run(audio, hint, fast)
+            if result.logprob >= LANGUAGE_CHECK_LOGPROB or len(audio) < MIN_DETECT_SECONDS * SAMPLE_RATE:
                 return result
-            detected = self.detect_language(audio)
-            if detected in (None, hint):
+            detected, probability = self._detect(audio)
+            if detected in (None, hint) or probability < MIN_SWITCH_PROBABILITY:
                 return result
-            return self._run(audio, detected, prompt, fast)
+            return self._run(audio, detected, fast)
         if language is None:
             language = self.detect_language(audio) or (self.languages[0] if self.languages else None)
-        return self._run(audio, language, prompt, fast)
+        return self._run(audio, language, fast)
 
-    def _run(self, audio: np.ndarray, language: str | None, prompt: str | None, fast: bool):
+    def _run(self, audio: np.ndarray, language: str | None, fast: bool):
         with self._lock:
             segments, info = self.model.transcribe(
                 audio,
                 language=language,
-                beam_size=self.settings.beam_size,
+                beam_size=1 if fast else self.settings.beam_size,
                 temperature=0.0 if fast else [0.0, 0.4],
                 without_timestamps=True,
-                initial_prompt=prompt or None,
+                # No previous text as prompt: on short or unclear audio Whisper
+                # copies the prompt instead of listening, and errors snowball.
                 condition_on_previous_text=False,
                 vad_filter=False,  # segmentation already did VAD
                 no_speech_threshold=0.6,

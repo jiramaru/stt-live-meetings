@@ -28,6 +28,7 @@ const state = {
   recording: false,
   sessionId: null, // session shown in the main pane
   title: "", // title of that session (or of the next recording)
+  hasAudio: false, // the session's audio was saved on the server
   segmentCount: 0,
   speakers: {}, // speaker id -> custom name
   lastSpeaker: undefined, // speaker of the last rendered segment
@@ -159,6 +160,7 @@ function clearTranscript() {
 function renderSession(session) {
   const scroll = els.transcript.scrollTop;
   state.speakers = session.speakers || {};
+  state.hasAudio = Boolean(session.audio);
   clearTranscript();
   session.segments.forEach(addSegment);
   els.transcript.scrollTop = scroll;
@@ -435,7 +437,9 @@ async function startAudio() {
     audio: {
       channelCount: 1,
       echoCancellation: false, // room audio, nothing is played back
-      noiseSuppression: true,
+      // Noise suppression is tuned for calls: it reshapes the voice spectrum,
+      // which hurts recognition and blurs the differences between voices.
+      noiseSuppression: false,
       autoGainControl: true,
     },
   });
@@ -609,6 +613,14 @@ function startTitleEdit() {
 
 function openTitleMenu() {
   const items = [{ icon: "edit", label: "Renommer la réunion", action: startTitleEdit }];
+  if (state.sessionId && state.hasAudio && !state.recording) {
+    const id = state.sessionId;
+    items.push({
+      icon: "download",
+      label: "Télécharger l'audio",
+      action: () => { location.href = `/api/sessions/${id}/audio`; },
+    });
+  }
   if (state.sessionId && !state.recording) {
     const id = state.sessionId;
     items.push({

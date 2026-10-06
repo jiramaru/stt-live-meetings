@@ -26,7 +26,6 @@ from .transcriber import Transcriber
 VadFn = Callable[[np.ndarray], list[tuple[int, int]]]
 
 PAD = int(0.2 * SAMPLE_RATE)  # audio kept around speech so words are not clipped
-PROMPT_CHARS = 200  # previous text given to Whisper for context
 
 
 def silero_vad(threshold: float = 0.5) -> VadFn:
@@ -81,7 +80,6 @@ class StreamingSegmenter:
     _next_id: int = 0
     _last_partial: str = ""
     _partial_language: str | None = None  # language guess for partials in auto mode
-    _context: str = ""
 
     def add_audio(self, chunk: np.ndarray) -> None:
         self._buffer = np.concatenate([self._buffer, chunk.astype(np.float32)])
@@ -150,7 +148,7 @@ class StreamingSegmenter:
         # In auto mode the previous segment's language is tried first; the
         # transcriber re-detects when the result looks unreliable.
         result = self.transcriber.transcribe(
-            audio, language=self.language, prompt=self._context, hint=self._partial_language
+            audio, language=self.language, hint=self._partial_language
         )
 
         if result.text:
@@ -164,7 +162,6 @@ class StreamingSegmenter:
             if self.speakers:
                 segment.speaker = self.speakers.assign(segment.id, audio)
             self._next_id += 1
-            self._context = (self._context + " " + result.text)[-PROMPT_CHARS:]
             events.append(Event(type="final", segment=segment))
             self._partial_language = result.language
 
@@ -181,9 +178,7 @@ class StreamingSegmenter:
             if len(audio) < 2 * SAMPLE_RATE:
                 return []
             language = self._partial_language = self.transcriber.detect_language(audio)
-        result = self.transcriber.transcribe(
-            audio, language=language, prompt=self._context, fast=True
-        )
+        result = self.transcriber.transcribe(audio, language=language, fast=True)
         return self._partial(result.text)
 
     def _partial(self, text: str) -> list[Event]:

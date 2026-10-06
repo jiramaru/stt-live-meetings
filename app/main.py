@@ -17,6 +17,7 @@ import asyncio
 import logging
 import re
 import threading
+import wave
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -29,7 +30,7 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .config import Settings, get_settings
+from .config import SAMPLE_RATE, Settings, get_settings
 from .exporters import EXPORTERS
 from .speakers import Embedder, SherpaEmbedder, SpeakerTracker
 from .storage import SessionStore
@@ -161,6 +162,16 @@ def create_app(
         except KeyError:
             raise HTTPException(404, "Session introuvable")
 
+    @app.get("/api/sessions/{session_id}/audio")
+    def session_audio(session_id: str):
+        try:
+            path = store.audio_path(session_id)
+        except KeyError:
+            raise HTTPException(404, "Session introuvable")
+        if not path.exists():
+            raise HTTPException(404, "Pas d'audio pour cette réunion")
+        return FileResponse(path, media_type="audio/wav", filename=f"reunion-{session_id[:8]}.wav")
+
     @app.get("/api/sessions/{session_id}/export")
     def export_session(session_id: str, format: str = "txt"):
         if format not in EXPORTERS:
@@ -211,6 +222,13 @@ async def run_session(
     language = language if language in settings.language_list else None
     session = store.create(start.get("title", ""), language)
     live[session["id"]] = session
+    recording = None
+    if settings.save_audio:
+        recording = wave.open(str(store.audio_path(session["id"])), "wb")
+        recording.setnchannels(1)
+        recording.setsampwidth(2)
+        recording.setframerate(SAMPLE_RATE)
+        session["audio"] = True
     tracker = None
     if parts.embedder:
         tracker = SpeakerTracker(
@@ -236,6 +254,8 @@ async def run_session(
                 if message["type"] == "websocket.disconnect":
                     break
                 if message.get("bytes"):
+                    if recording:
+                        recording.writeframes(message["bytes"])
                     pcm = np.frombuffer(message["bytes"], dtype="<i2")
                     inbox.append(pcm.astype(np.float32) / 32768.0)
                     wake.set()
@@ -268,6 +288,8 @@ async def run_session(
         await emit(await asyncio.to_thread(segmenter.flush))
     finally:
         receiver.cancel()
+        if recording:
+            recording.close()
         if tracker:
             labels = tracker.refine()
             for segment in session["segments"]:

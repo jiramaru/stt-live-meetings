@@ -39,6 +39,14 @@ def test_hallucinations_are_removed():
     assert clean_text("  Merci   pour  ce point. ") == "Merci pour ce point."
 
 
+def test_decoding_loops_are_collapsed():
+    assert clean_text("Hello " * 200) == "Hello"
+    assert clean_text("Hi Hello Hello Hello Hello") == "Hi Hello"
+    assert clean_text("c'est pas mal, c'est pas mal, c'est pas mal, c'est pas mal") == "c'est pas mal"
+    # A phrase said twice is kept: people do repeat themselves.
+    assert clean_text("oui oui, on continue") == "oui oui, on continue"
+
+
 def test_speaker_names_in_exports():
     session = {
         **SESSION,

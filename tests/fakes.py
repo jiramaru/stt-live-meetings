@@ -43,8 +43,8 @@ class FakeTranscriber:
     def detect_language(self, audio):
         return "fr"
 
-    def transcribe(self, audio, language=None, prompt=None, fast=False, hint=None):
-        self.calls.append((len(audio), language, prompt))
+    def transcribe(self, audio, language=None, fast=False, hint=None):
+        self.calls.append((len(audio), language))
         voiced = sum(e - s for s, e in energy_vad(audio)) / SAMPLE_RATE
         text = f"speech {voiced:.1f}s" if voiced else ""
         return Transcription(text=text, language=language or "fr")

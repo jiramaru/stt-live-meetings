@@ -21,6 +21,9 @@ class SessionStore:
             raise KeyError(session_id)
         return self.dir / f"{session_id}.json"
 
+    def audio_path(self, session_id: str) -> Path:
+        return self._path(session_id).with_suffix(".wav")
+
     def create(self, title: str, language: str | None) -> dict:
         session = {
             "id": uuid.uuid4().hex,
@@ -63,3 +66,4 @@ class SessionStore:
         if not path.exists():
             raise KeyError(session_id)
         path.unlink()
+        self.audio_path(session_id).unlink(missing_ok=True)
