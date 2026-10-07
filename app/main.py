@@ -77,6 +77,13 @@ class Engine:
             self.status, self.error = "error", str(exc)
 
 
+def next_guest_id(session: dict) -> str:
+    """A speaker id not used yet in this meeting ("S" + next number)."""
+    used = [s["speaker"] for s in session["segments"] if s.get("speaker")] + list(session["speakers"])
+    numbers = [int(x[1:]) for x in used if x.startswith("S") and x[1:].isdigit()]
+    return f"S{max(numbers, default=0) + 1}"
+
+
 def default_loader(settings: Settings) -> Callable[[], Components]:
     def load() -> Components:
         embedder = None
@@ -99,7 +106,9 @@ class ProfileUpdate(BaseModel):
 
 
 class SegmentUpdate(BaseModel):
-    text: str = Field(..., max_length=5000)
+    text: str | None = Field(None, max_length=5000)
+    # "S2", a profile id "P1a2b3c4d", or "new" for a speaker not seen yet
+    speaker: str | None = None
 
 
 class SessionUpdate(BaseModel):
@@ -119,6 +128,7 @@ def create_app(
     # recorder's next save does not overwrite them. Every access happens on
     # the event loop (async handlers), so no lock is needed.
     live: dict[str, dict] = {}
+    trackers: dict[str, SpeakerTracker] = {}  # speaker tracking of those sessions
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -217,7 +227,8 @@ def create_app(
 
     @app.patch("/api/sessions/{session_id}/segments/{segment_id}")
     async def update_segment(session_id: str, segment_id: int, update: SegmentUpdate):
-        """Correct a segment's text by hand (also while recording)."""
+        """Correct a segment by hand, also while recording: its text, or who
+        said it."""
         try:
             session = live.get(session_id) or store.get(session_id)
         except KeyError:
@@ -225,14 +236,35 @@ def create_app(
         segment = next((s for s in session["segments"] if s["id"] == segment_id), None)
         if segment is None:
             raise HTTPException(404, "Segment introuvable")
-        text = " ".join(update.text.split())
-        if not text:
-            raise HTTPException(400, "Le texte ne peut pas être vide.")
-        if text != segment["text"]:
-            segment.setdefault("original", segment["text"])  # what the recognizer heard
-            segment["text"] = text
-            segment["edited"] = True
-            store.save(session)
+
+        if update.text is not None:
+            text = " ".join(update.text.split())
+            if not text:
+                raise HTTPException(400, "Le texte ne peut pas être vide.")
+            if text != segment["text"]:
+                segment.setdefault("original", segment["text"])  # what the recognizer heard
+                segment["text"] = text
+                segment["edited"] = True
+
+        if update.speaker is not None:
+            tracker = trackers.get(session_id)
+            speaker = update.speaker
+            if speaker == "new":
+                speaker = tracker.new_speaker_id() if tracker else next_guest_id(session)
+            elif not SPEAKER_ID_RE.match(speaker):
+                raise HTTPException(400, f"Intervenant inconnu : {speaker}")
+            elif speaker.startswith("P"):
+                profile = next((p for p in profiles.list() if p["id"] == speaker), None)
+                if profile is None:
+                    raise HTTPException(404, "Profil introuvable")
+                session["speakers"].setdefault(speaker, profile["name"])
+            segment["speaker"] = speaker
+            segment["speaker_manual"] = True  # the automatic relabelling keeps it
+            if tracker:
+                # In a thread: it may wait for a segment being labelled.
+                await asyncio.to_thread(tracker.reassign, segment_id, speaker)
+
+        store.save(session)
         return segment
 
     @app.delete("/api/sessions/{session_id}", status_code=204)
@@ -279,7 +311,7 @@ def create_app(
             await ws.close()
             return
         try:
-            await run_session(ws, engine.parts, store, profiles, live, settings)
+            await run_session(ws, engine.parts, store, profiles, live, trackers, settings)
         except (WebSocketDisconnect, RuntimeError):
             pass  # client left; the session was saved by run_session
 
@@ -297,6 +329,7 @@ async def run_session(
     store: SessionStore,
     profiles: ProfileStore,
     live: dict,
+    trackers: dict,
     settings: Settings,
 ):
     start = await ws.receive_json()
@@ -322,6 +355,7 @@ async def run_session(
             merge_threshold=settings.speaker_merge_threshold,
             profiles=profiles.voices(),
         )
+        trackers[session["id"]] = tracker
     names = {p.id: p.name for p in (tracker.profiles if tracker else [])}
     segmenter = StreamingSegmenter(
         parts.transcriber, parts.vad, settings, language=language, speakers=tracker
@@ -366,7 +400,8 @@ async def run_session(
         if tracker:
             labels = tracker.refine()
             for segment in session["segments"]:
-                segment["speaker"] = labels.get(segment["id"], segment["speaker"])
+                if not segment.get("speaker_manual"):
+                    segment["speaker"] = labels.get(segment["id"], segment["speaker"])
 
     async def emit(events):
         for event in events:
@@ -419,6 +454,7 @@ async def run_session(
         session["ended_at"] = datetime.now(timezone.utc).isoformat()
         store.save(session)
         live.pop(session["id"], None)
+        trackers.pop(session["id"], None)
 
     await ws.send_json({"type": "stopped", "session": session})
     await ws.close()

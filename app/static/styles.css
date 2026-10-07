@@ -400,6 +400,15 @@ button:disabled { cursor: not-allowed; opacity: .5; }
   background: var(--surface);
   box-shadow: 0 8px 24px rgba(0, 0, 0, .14);
 }
+.menu-heading {
+  padding: 6px 12px 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .03em;
+  text-transform: uppercase;
+}
+.menu { max-height: min(420px, calc(100vh - 16px)); overflow-y: auto; }
 .menu-item {
   display: flex;
   align-items: center;

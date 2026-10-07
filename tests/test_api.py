@@ -246,3 +246,51 @@ def test_segment_text_can_be_corrected(client):
 
     assert client.patch(url, json={"text": "   "}).status_code == 400
     assert client.patch(f"/api/sessions/{session_id}/segments/99", json={"text": "x"}).status_code == 404
+
+
+def test_segment_can_be_given_to_another_speaker(client):
+    audio = np.concatenate([tone(1.5, 220), silence(1.2), tone(1.5, 660), silence(1.2)])
+    session_id, _ = record(client, audio)
+    url = f"/api/sessions/{session_id}/segments"
+
+    # To another speaker of the meeting
+    assert client.patch(f"{url}/1", json={"speaker": "S1"}).json()["speaker"] == "S1"
+    # To a speaker not seen yet. S2 is free again, but it was given a name
+    # in this meeting: a new speaker must not inherit it.
+    client.patch(f"/api/sessions/{session_id}", json={"speakers": {"S2": "Paul"}})
+    assert client.patch(f"{url}/0", json={"speaker": "new"}).json()["speaker"] == "S3"
+    # To an enrolled voice: the meeting now knows that name
+    profile = client.post(
+        "/api/profiles", content=pcm16(tone(10.0, 440)),
+        headers={"X-Profile-Name": "Awa", "X-Consent": "yes"},
+    ).json()
+    client.patch(f"{url}/1", json={"speaker": profile["id"]})
+    session = client.get(f"/api/sessions/{session_id}").json()
+    assert [s["speaker"] for s in session["segments"]] == ["S3", profile["id"]]
+    assert session["speakers"][profile["id"]] == "Awa"
+    assert all(s["speaker_manual"] for s in session["segments"])
+
+    assert client.patch(f"{url}/0", json={"speaker": "../x"}).status_code == 400
+    assert client.patch(f"{url}/0", json={"speaker": "P00000000"}).status_code == 404
+
+
+def test_manual_speaker_survives_the_final_relabelling(client):
+    with client.websocket_connect("/ws/transcribe") as ws:
+        ws.send_json({"type": "start", "title": "Copil", "language": "auto"})
+        session_id = ws.receive_json()["session"]["id"]
+        ws.send_bytes(pcm16(np.concatenate([tone(1.5, 220), silence(1.2)])))
+        ws.send_json({"type": "pause"})
+        while ws.receive_json()["type"] != "paused":
+            pass
+        # Corrected while the meeting is paused (still live).
+        r = client.patch(f"/api/sessions/{session_id}/segments/0", json={"speaker": "new"})
+        assert r.json()["speaker"] == "S2"
+        ws.send_json({"type": "resume"})
+        ws.receive_json()
+        # The same voice again: the tracker learned it is S2 now.
+        ws.send_bytes(pcm16(np.concatenate([tone(1.5, 220), silence(1.2)])))
+        ws.send_json({"type": "stop"})
+        msg = ws.receive_json()
+        while msg["type"] != "stopped":
+            msg = ws.receive_json()
+    assert [s["speaker"] for s in msg["session"]["segments"]] == ["S2", "S2"]

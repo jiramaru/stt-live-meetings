@@ -101,3 +101,25 @@ def test_short_reply_goes_to_the_closest_profile():
     tracker.profiles = [profile("Paaaaaaaa", 220), profile("Pbbbbbbbb", 660)]
     tracker.assign(0, tone(2.0, 220))
     assert tracker.assign(1, tone(0.8, 660)) == "Pbbbbbbbb"
+
+
+def test_manual_reassignment_is_kept_and_learned():
+    tracker = make()
+    tracker.assign(0, tone(2.0, 220))
+    tracker.assign(1, tone(2.0, 660))
+    # Someone says segment 1 was a third person, not S2.
+    tracker.reassign(1, "S3")
+    assert "S2" not in tracker._centroids  # its only voice moved away
+    # The next segment with that voice is now recognised as S3...
+    assert tracker.assign(2, tone(2.0, 660)) == "S3"
+    # ...and refine() does not undo the correction.
+    assert tracker.refine()[1] == "S3"
+    assert tracker.new_speaker_id() == "S4"
+
+
+def test_short_segment_reassigned_by_hand_is_not_refilled():
+    tracker = make()
+    tracker.assign(0, tone(2.0, 220))
+    tracker.assign(1, tone(0.4, 660))  # too short: inherits S1
+    tracker.reassign(1, "S2")
+    assert tracker.refine() == {0: "S1", 1: "S2"}

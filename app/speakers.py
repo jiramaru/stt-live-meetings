@@ -16,6 +16,7 @@ close for two recordings of the same voice and far apart for different voices.
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -113,6 +114,7 @@ class _Item:
     duration: float
     embedding: np.ndarray | None  # None when the segment was too short
     speaker: str | None
+    pinned: bool = False  # set by hand: refine() never changes it
 
 
 @dataclass
@@ -128,6 +130,9 @@ class SpeakerTracker:
     _items: list[_Item] = field(default_factory=list)
     _centroids: dict[str, np.ndarray] = field(default_factory=dict)  # sum of embeddings
     _next: int = 1
+    # Segments are labelled in a worker thread while corrections arrive from
+    # the API: shared state is only touched under this lock.
+    _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def assign(self, segment_id: int, audio: np.ndarray) -> str | None:
         """Label a whole segment live. Returns a speaker id ('P...' or 'S1')."""
@@ -145,13 +150,17 @@ class SpeakerTracker:
         refine() settles the rest.
         """
         duration = len(audio) / SAMPLE_RATE
-        if previous is None and self._items:
-            previous = self._items[-1].speaker
         min_seconds = MIN_MATCH_SECONDS if self.profiles else MIN_EMBED_SECONDS
-        if duration < min_seconds:
-            return previous, None
-        embedding = _normalize(self.embedder.embed(audio))
+        # The embedding is the slow part: computed outside the lock.
+        embedding = _normalize(self.embedder.embed(audio)) if duration >= min_seconds else None
+        with self._lock:
+            if previous is None and self._items:
+                previous = self._items[-1].speaker
+            if embedding is None:
+                return previous, None
+            return self._decide(embedding, duration, previous)
 
+    def _decide(self, embedding: np.ndarray, duration: float, previous: str | None):
         if self.profiles:
             best = max(self.profiles, key=lambda p: p.z(embedding))
             if best.z(embedding) >= -GUEST_Z or duration < GUEST_MIN_SECONDS:
@@ -170,7 +179,39 @@ class SpeakerTracker:
         self, segment_id: int, duration: float, embedding: np.ndarray | None, speaker: str | None
     ) -> None:
         """Remember a final segment's voice, for refine()."""
-        self._items.append(_Item(segment_id, duration, embedding, speaker))
+        with self._lock:
+            self._items.append(_Item(segment_id, duration, embedding, speaker))
+
+    def reassign(self, segment_id: int, speaker: str) -> None:
+        """A person corrected a segment's speaker: learn from it.
+
+        The segment's voice moves to the right speaker, so the following
+        segments are compared with a better picture, and refine() keeps it.
+        """
+        with self._lock:
+            self._reassign(segment_id, speaker)
+
+    def _reassign(self, segment_id: int, speaker: str) -> None:
+        item = next((it for it in self._items if it.segment_id == segment_id), None)
+        if item is None:
+            return
+        if item.embedding is not None:
+            weighted = item.embedding * item.duration
+            if item.speaker in self._centroids:
+                self._centroids[item.speaker] -= weighted
+                if np.linalg.norm(self._centroids[item.speaker]) < 1e-3:
+                    del self._centroids[item.speaker]  # nothing left of that voice
+            if not self._is_profile(speaker):
+                self._centroids.setdefault(speaker, np.zeros_like(item.embedding))
+                self._centroids[speaker] += weighted
+        if speaker.startswith("S") and speaker[1:].isdigit():
+            self._next = max(self._next, int(speaker[1:]) + 1)
+        item.speaker = speaker
+        item.pinned = True
+
+    def new_speaker_id(self) -> str:
+        with self._lock:
+            return self._new_id()
 
     def _is_profile(self, speaker: str | None) -> bool:
         return bool(speaker) and speaker.startswith("P")
@@ -181,11 +222,15 @@ class SpeakerTracker:
         Speaker ids are kept stable where possible, so names given during the
         meeting stay attached to the same voice.
         """
+        with self._lock:
+            return self._refine(iterations)
+
+    def _refine(self, iterations: int) -> dict[int, str | None]:
         # Profile matches are decided against enrolled voices: kept as they are.
         # Only the unknown voices are re-clustered.
         known = [
             it for it in self._items
-            if it.embedding is not None and not self._is_profile(it.speaker)
+            if it.embedding is not None and not self._is_profile(it.speaker) and not it.pinned
         ]
         if known and self._centroids:
             self._recluster(known, iterations)
@@ -215,13 +260,13 @@ class SpeakerTracker:
         # or after for those at the very start.
         previous = None
         for it in self._items:
-            if it.embedding is not None:
+            if it.embedding is not None or it.pinned:
                 previous = it.speaker
             else:
                 it.speaker = previous
         following = None
         for it in reversed(self._items):
-            if it.embedding is not None:
+            if it.embedding is not None or it.pinned:
                 following = it.speaker
             elif it.speaker is None:
                 it.speaker = following

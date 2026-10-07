@@ -47,6 +47,7 @@ const state = {
   title: "", // title of that session (or of the next recording)
   hasAudio: false, // the session's audio was saved on the server
   segmentCount: 0,
+  segmentList: [], // segments shown, in order
   speakers: {}, // speaker id -> custom name
   lastSpeaker: undefined, // speaker of the last rendered segment
   ws: null,
@@ -94,6 +95,7 @@ function scrollToBottom() {
 // Small dropdown opened from a "more_vert" button. Items:
 // { icon, label, action, danger?, confirm? } where `confirm` is the label
 // shown after a first click; the action only runs on the second click.
+// { heading } adds a section title.
 let openedMenu = null;
 
 function closeMenu() {
@@ -116,6 +118,13 @@ function openMenu(anchor, items) {
   menu.className = "menu";
   menu.setAttribute("role", "menu");
   for (const item of items) {
+    if (item.heading) {
+      const heading = document.createElement("div");
+      heading.className = "menu-heading";
+      heading.textContent = item.heading;
+      menu.append(heading);
+      continue;
+    }
     const btn = document.createElement("button");
     btn.className = "menu-item" + (item.danger ? " danger" : "");
     btn.setAttribute("role", "menuitem");
@@ -173,16 +182,19 @@ function clearTranscript() {
   els.segments.replaceChildren();
   els.partial.textContent = "";
   state.segmentCount = 0;
+  state.segmentList = [];
   state.lastSpeaker = undefined;
   updateEmptyState();
 }
 
 function renderSession(session) {
   const scroll = els.transcript.scrollTop;
+  const partial = els.partial.textContent; // a live preview survives the redraw
   state.speakers = session.speakers || {};
   state.hasAudio = Boolean(session.audio);
   clearTranscript();
   session.segments.forEach(addSegment);
+  els.partial.textContent = partial;
   els.transcript.scrollTop = scroll;
 }
 
@@ -297,6 +309,7 @@ function addSegment(segment) {
     els.segments.append(turn);
   }
   state.lastSpeaker = segment.speaker;
+  state.segmentList.push(segment);
   const li = document.createElement("li");
   li.className = "segment";
   const time = document.createElement("time");
@@ -320,6 +333,11 @@ function addSegment(segment) {
   more.append(icon("more_vert"));
   more.addEventListener("click", () => openMenu(more, [
     { icon: "edit", label: "Modifier le texte", action: () => editSegment(li, segment) },
+    {
+      icon: "switch_account",
+      label: "Attribuer à un autre intervenant",
+      action: () => chooseSpeaker(more, segment),
+    },
   ]));
 
   li.dataset.id = segment.id;
@@ -328,6 +346,41 @@ function addSegment(segment) {
   state.segmentCount++;
   updateEmptyState();
   if (follow) scrollToBottom();
+}
+
+// Second menu: who said this passage. The meeting's other speakers first,
+// then enrolled voices not heard yet, then a brand new speaker.
+async function chooseSpeaker(anchor, segment) {
+  let profiles = [];
+  try {
+    profiles = await (await fetch("/api/profiles")).json();
+  } catch {
+    // profiles are optional here
+  }
+  const inMeeting = [...new Set(state.segmentList.map((s) => s.speaker).filter(Boolean))];
+  const items = [{ heading: "Attribuer à" }];
+  for (const id of inMeeting) {
+    if (id === segment.speaker) continue;
+    items.push({ icon: "person", label: speakerName(id), action: () => setSpeaker(segment, id) });
+  }
+  for (const p of profiles) {
+    if (inMeeting.includes(p.id)) continue;
+    items.push({ icon: "account_circle", label: p.name, action: () => setSpeaker(segment, p.id) });
+  }
+  items.push({ icon: "person_add", label: "Nouvel intervenant", action: () => setSpeaker(segment, "new") });
+  openMenu(anchor, items);
+}
+
+async function setSpeaker(segment, speaker) {
+  const res = await fetch(`/api/sessions/${state.sessionId}/segments/${segment.id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ speaker }),
+  });
+  if (!res.ok) return toast("Impossible de changer l'intervenant.");
+  // Turns regroup around the change: redraw from the saved meeting.
+  const session = await (await fetch(`/api/sessions/${state.sessionId}`)).json();
+  renderSession(session);
 }
 
 // The text was corrected by hand: say so, and keep what was recognized
