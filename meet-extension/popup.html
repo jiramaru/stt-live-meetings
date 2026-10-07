@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,300..500,0..1,0&display=block">
+  <link rel="stylesheet" href="ui.css">
+  <style>
+    body { width: 340px; padding: 14px; }
+    header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+    .live { padding: 8px 10px; border-radius: 8px; background: var(--surface-2); margin-bottom: 10px; }
+    ul { list-style: none; margin: 0; padding: 0; }
+    li { padding: 8px 0; border-top: 1px solid var(--border); }
+    .title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .sub { font-size: 12px; }
+    a { color: var(--accent); }
+    .icon-btn { border: 0; background: transparent; color: var(--muted); cursor: pointer; padding: 4px; border-radius: 6px; }
+    .icon-btn:hover { background: var(--surface-2); color: var(--text); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1><span class="material-symbols-outlined">graphic_eq</span>Transcription Meet</h1>
+    <button class="icon-btn" id="options" title="Options" aria-label="Options">
+      <span class="material-symbols-outlined">settings</span>
+    </button>
+  </header>
+  <div class="live" id="live" hidden></div>
+  <ul id="history"></ul>
+  <script type="module" src="src/popup.js"></script>
+</body>
+</html>

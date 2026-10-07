@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <title>Transcription Meet - Options</title>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,300..500,0..1,0&display=block">
+  <link rel="stylesheet" href="ui.css">
+  <style>
+    main { max-width: 620px; margin: 32px auto; padding: 0 16px; }
+    section { padding: 20px 0; border-bottom: 1px solid var(--border); }
+    h2 { font-size: 14px; margin: 0 0 8px; }
+    label.choice { display: flex; gap: 10px; align-items: flex-start; padding: 6px 0; cursor: pointer; }
+    label.choice input { margin-top: 4px; }
+    input[type="text"] {
+      width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
+      background: transparent; color: inherit; font: inherit;
+    }
+    #status { margin-left: 10px; }
+    ol { padding-left: 20px; margin: 6px 0 0; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1><span class="material-symbols-outlined">graphic_eq</span>Transcription Meet</h1>
+
+    <section>
+      <h2>Compte Google</h2>
+      <p class="muted">L'extension utilise votre compte pour lire l'agenda (participants et titre de la réunion),
+        créer le document dans Drive et envoyer l'e-mail depuis votre adresse.</p>
+      <button class="btn primary" id="connect"><span class="material-symbols-outlined">login</span>Autoriser l'accès</button>
+      <span id="account"></span>
+    </section>
+
+    <section>
+      <h2>Envoi par e-mail</h2>
+      <label class="choice"><input type="radio" name="emailMode" value="organizer">
+        <span><b>Seulement si je suis l'organisateur</b> (recommandé)<br>
+        <span class="muted">Évite que chaque membre de l'équipe présent envoie le même e-mail.</span></span></label>
+      <label class="choice"><input type="radio" name="emailMode" value="always">
+        <span><b>Toujours</b><br><span class="muted">Envoie aux invités de l'agenda même si je ne suis pas l'organisateur.</span></span></label>
+      <label class="choice"><input type="radio" name="emailMode" value="never">
+        <span><b>Jamais</b><br><span class="muted">Le document est seulement créé dans mon Drive.</span></span></label>
+      <p class="muted">Pour un appel sans événement dans l'agenda, une copie vous est envoyée à vous seul.</p>
+    </section>
+
+    <section>
+      <h2>Google Drive</h2>
+      <label class="choice"><input type="checkbox" id="shareDoc">
+        <span>Donner accès au document aux destinataires de l'e-mail (lecture seule)</span></label>
+      <p><label for="folderName">Nom du dossier Drive</label></p>
+      <input type="text" id="folderName" maxlength="100">
+    </section>
+
+    <section>
+      <h2>Avant la première réunion</h2>
+      <ol class="muted">
+        <li>Dans Meet, ouvrez Paramètres, puis Sous-titres, et choisissez la langue <b>Français</b>.</li>
+        <li>Prévenez les participants que la réunion est transcrite.</li>
+      </ol>
+    </section>
+
+    <p><button class="btn primary" id="save">Enregistrer</button><span id="status"></span></p>
+  </main>
+  <script type="module" src="src/options.js"></script>
+</body>
+</html>
