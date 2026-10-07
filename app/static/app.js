@@ -22,13 +22,17 @@ const els = {
   stopBtn: $("stopBtn"),
   exportGroup: $("exportGroup"),
   toast: $("toast"),
-  profilesBtn: $("profilesBtn"),
-  profilesDialog: $("profilesDialog"),
-  profilesClose: $("profilesClose"),
+  tabMeetings: $("tabMeetings"),
+  tabProfiles: $("tabProfiles"),
+  meetingsPane: $("meetingsPane"),
+  meetingView: $("meetingView"),
+  profilesView: $("profilesView"),
+  menuBtn2: $("menuBtn2"),
   profileList: $("profileList"),
   enrolName: $("enrolName"),
   enrolConsent: $("enrolConsent"),
-  enrolRead: $("enrolRead"),
+  readText: $("readText"),
+  enrolProgress: $("enrolProgress"),
   enrolBar: $("enrolBar"),
   enrolBtn: $("enrolBtn"),
   enrolBtnLabel: $("enrolBtnLabel"),
@@ -715,19 +719,22 @@ function openTitleMenu() {
 // ---------------------------------------------------------------- voice profiles
 
 const ENROL_MIN_SECONDS = 15; // enough speech for a reliable voice print
-const ENROL_MAX_SECONDS = 30;
+const ENROL_MAX_SECONDS = 45; // the text takes about 30 s to read
 let enrolment = null; // { release, chunks, startedAt, timer } while recording
 
-function openProfiles() {
-  els.profilesDialog.hidden = false;
-  loadProfiles();
-  els.enrolName.focus();
-}
-
-function closeProfiles() {
-  if (enrolment) return; // finish or cancel the recording first
+// Tabs: "Réunions" (transcripts) and "Profils" (voice profiles). A meeting
+// keeps recording while the profiles tab is open.
+function showTab(name) {
+  if (enrolment) return; // finish the voice recording first
+  const profiles = name === "profiles";
   closeMenu();
-  els.profilesDialog.hidden = true;
+  els.tabMeetings.setAttribute("aria-selected", String(!profiles));
+  els.tabProfiles.setAttribute("aria-selected", String(profiles));
+  els.meetingView.hidden = profiles;
+  els.meetingsPane.hidden = profiles;
+  els.profilesView.hidden = !profiles;
+  els.sidebar.classList.remove("open");
+  if (profiles) loadProfiles();
 }
 
 async function loadProfiles() {
@@ -828,11 +835,12 @@ async function toggleEnrolment() {
     return setEnrolStatus(err.name === "NotAllowedError" ? "Accès au micro refusé." : err.message, true);
   }
   enrolment = { release, chunks, startedAt: performance.now() };
-  els.enrolRead.hidden = false;
+  els.enrolProgress.hidden = false;
+  els.readText.classList.add("reading");
   els.enrolBtn.classList.add("recording");
   els.enrolBtn.querySelector(".material-symbols-outlined").textContent = "stop";
   els.enrolName.disabled = els.enrolConsent.disabled = true;
-  setEnrolStatus("Lisez le texte…");
+  setEnrolStatus("Lisez le texte à voix haute…");
   enrolment.timer = setInterval(() => {
     const elapsed = (performance.now() - enrolment.startedAt) / 1000;
     els.enrolBar.style.width = `${Math.min(100, (elapsed / ENROL_MAX_SECONDS) * 100)}%`;
@@ -876,25 +884,21 @@ async function finishEnrolment() {
 }
 
 function resetEnrolForm() {
-  els.enrolRead.hidden = true;
+  els.enrolProgress.hidden = true;
+  els.readText.classList.remove("reading");
   els.enrolBar.style.width = "0";
   els.enrolBtn.disabled = false;
   els.enrolBtn.classList.remove("recording");
   els.enrolBtn.querySelector(".material-symbols-outlined").textContent = "mic";
-  els.enrolBtnLabel.textContent = "Enregistrer la voix";
+  els.enrolBtnLabel.textContent = "Commencer la lecture";
   els.enrolName.disabled = els.enrolConsent.disabled = false;
 }
 
 // ---------------------------------------------------------------- wiring
 
-els.profilesBtn.addEventListener("click", openProfiles);
-els.profilesClose.addEventListener("click", closeProfiles);
-els.profilesDialog.addEventListener("click", (e) => {
-  if (e.target === els.profilesDialog) closeProfiles();
-});
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !els.profilesDialog.hidden) closeProfiles();
-});
+els.tabMeetings.addEventListener("click", () => showTab("meetings"));
+els.tabProfiles.addEventListener("click", () => showTab("profiles"));
+els.menuBtn2.addEventListener("click", () => els.sidebar.classList.toggle("open"));
 els.enrolBtn.addEventListener("click", toggleEnrolment);
 
 els.titleMenuBtn.addEventListener("click", openTitleMenu);

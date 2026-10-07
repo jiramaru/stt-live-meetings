@@ -15,17 +15,25 @@
       <span class="material-symbols-outlined brand-icon">graphic_eq</span>
       <span class="brand">Transcription live</span>
     </div>
-    <button class="btn btn-ghost new-btn" id="newBtn">
-      <span class="material-symbols-outlined">add</span> Nouvelle réunion
-    </button>
-    <button class="btn btn-ghost new-btn" id="profilesBtn">
-      <span class="material-symbols-outlined">record_voice_over</span> Profils vocaux
-    </button>
-    <div class="sidebar-label">Historique</div>
-    <ul class="session-list" id="sessionList"></ul>
+    <nav class="tabs" role="tablist" aria-label="Sections">
+      <button class="tab" role="tab" id="tabMeetings" aria-selected="true" aria-controls="meetingView">
+        <span class="material-symbols-outlined">forum</span>Réunions
+      </button>
+      <button class="tab" role="tab" id="tabProfiles" aria-selected="false" aria-controls="profilesView">
+        <span class="material-symbols-outlined">record_voice_over</span>Profils
+      </button>
+    </nav>
+    <div class="sidebar-pane" id="meetingsPane">
+      <button class="btn btn-ghost new-btn" id="newBtn">
+        <span class="material-symbols-outlined">add</span> Nouvelle réunion
+      </button>
+      <div class="sidebar-label">Historique</div>
+      <ul class="session-list" id="sessionList"></ul>
+    </div>
   </aside>
 
   <main class="main">
+   <div class="view" id="meetingView" role="tabpanel" aria-labelledby="tabMeetings">
     <header class="toolbar">
       <button class="icon-btn menu-btn" id="menuBtn" aria-label="Historique">
         <span class="material-symbols-outlined">menu</span>
@@ -80,47 +88,55 @@
         <button class="btn btn-ghost" data-format="md"><span class="material-symbols-outlined">code</span>MD</button>
       </div>
     </footer>
+   </div>
+
+   <div class="view" id="profilesView" role="tabpanel" aria-labelledby="tabProfiles" hidden>
+    <header class="toolbar">
+      <button class="icon-btn menu-btn" id="menuBtn2" aria-label="Menu">
+        <span class="material-symbols-outlined">menu</span>
+      </button>
+      <h1 class="title-text">Profils vocaux</h1>
+    </header>
+    <div class="profiles-scroll">
+      <div class="profiles-page">
+        <p class="page-intro">Chaque personne inscrite est reconnue automatiquement et nommée dans les
+          transcriptions de toutes les réunions suivantes. Seule l'empreinte de la voix est conservée,
+          jamais l'enregistrement.</p>
+
+        <section class="card enrol">
+          <h2><span class="material-symbols-outlined">person_add</span>Ajouter un profil</h2>
+          <input class="text-input" id="enrolName" placeholder="Nom et prénom" maxlength="80" autocomplete="off">
+          <label class="consent">
+            <input type="checkbox" id="enrolConsent">
+            <span>La personne accepte que l'empreinte de sa voix soit enregistrée pour la reconnaître
+              dans les transcriptions, et sait qu'elle peut en demander la suppression à tout moment.</span>
+          </label>
+          <p class="hint">Lisez ce texte à voix haute, d'une voix naturelle, depuis votre place habituelle
+            autour du micro de réunion. Comptez environ 30 secondes.</p>
+          <blockquote class="read-text" id="readText">Bonjour, je lis ce texte pour que l'application
+            reconnaisse ma voix pendant nos réunions. Chaque semaine, nous faisons le point sur les
+            projets en cours : le budget, le calendrier, les priorités du trimestre et les décisions à
+            signer. Parfois la discussion est rapide, parfois elle s'étire jusqu'au soir. Quoi qu'il
+            arrive, je parle simplement, ni trop fort ni trop vite, comme d'habitude. Je vous remercie,
+            et je souhaite une bonne journée à toutes et à tous.</blockquote>
+          <div class="enrol-progress" id="enrolProgress" hidden><div id="enrolBar"></div></div>
+          <div class="enrol-actions">
+            <button class="btn primary" id="enrolBtn">
+              <span class="material-symbols-outlined">mic</span><span id="enrolBtnLabel">Commencer la lecture</span>
+            </button>
+            <span class="enrol-status" id="enrolStatus" role="status"></span>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2><span class="material-symbols-outlined">groups</span>Voix inscrites</h2>
+          <ul class="profile-list" id="profileList"></ul>
+        </section>
+      </div>
+    </div>
+   </div>
     <div class="toast" id="toast" role="status"></div>
   </main>
-
-  <div class="overlay" id="profilesDialog" hidden>
-    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="profilesTitle">
-      <header class="dialog-head">
-        <h2 id="profilesTitle">Profils vocaux</h2>
-        <button class="icon-btn" id="profilesClose" aria-label="Fermer">
-          <span class="material-symbols-outlined">close</span>
-        </button>
-      </header>
-      <p class="dialog-intro">Chaque personne inscrite est reconnue par son nom dans les transcriptions.
-        Seule l'empreinte de la voix est conservée, jamais l'enregistrement.</p>
-      <ul class="profile-list" id="profileList"></ul>
-
-      <section class="enrol">
-        <h3>Ajouter une voix</h3>
-        <input class="text-input" id="enrolName" placeholder="Nom de la personne" maxlength="80" autocomplete="off">
-        <label class="consent">
-          <input type="checkbox" id="enrolConsent">
-          <span>La personne accepte que l'empreinte de sa voix soit enregistrée pour la reconnaître
-            dans les transcriptions, et sait qu'elle peut en demander la suppression à tout moment.</span>
-        </label>
-        <div class="enrol-read" id="enrolRead" hidden>
-          <p class="hint">Lisez ce texte d'une voix naturelle, à votre place habituelle autour du micro de réunion :</p>
-          <blockquote>Bonjour à tous. Je participe régulièrement aux réunions de l'équipe, et ce court
-            enregistrement permet à l'application de reconnaître ma voix. Nous parlons souvent des projets
-            en cours, du calendrier des prochaines étapes et des décisions à prendre ensemble. Je lis
-            maintenant ce texte sans me presser, comme je parlerais pendant une réunion ordinaire.
-            Je vous remercie de votre attention, et je vous souhaite une excellente journée.</blockquote>
-          <div class="enrol-progress"><div id="enrolBar"></div></div>
-        </div>
-        <div class="enrol-actions">
-          <button class="btn primary" id="enrolBtn">
-            <span class="material-symbols-outlined">mic</span><span id="enrolBtnLabel">Enregistrer la voix</span>
-          </button>
-          <span class="enrol-status" id="enrolStatus" role="status"></span>
-        </div>
-      </section>
-    </div>
-  </div>
 
   <script src="/static/app.js" type="module"></script>
 </body>
