@@ -105,3 +105,33 @@ def test_partials_are_skipped_while_behind_real_time():
     seg.add_audio(tone(2.0))  # 8 steps' worth of audio arrives at once
     assert seg.step() == []
     assert not transcriber.calls
+
+
+def test_segment_is_split_where_the_speaker_changes():
+    # A quick reply (0.4 s pause) does not close the segment, but the two
+    # voices are told apart and the segment is cut between them.
+    from app.speakers import SpeakerTracker
+
+    from .fakes import FakeEmbedder
+
+    seg, _ = make()
+    seg.speakers = SpeakerTracker(FakeEmbedder())
+    audio = np.concatenate([tone(1.5, 220), silence(0.4), tone(1.5, 660), silence(1.0)])
+    segments = finals(feed(seg, audio))
+
+    assert [(s.text, s.speaker) for s in segments] == [("speech 1.5s", "S1"), ("speech 1.5s", "S2")]
+    assert segments[0].end <= segments[1].start + 0.2
+    assert [s.id for s in segments] == [0, 1]
+    assert seg.speakers.refine() == {0: "S1", 1: "S2"}
+
+
+def test_same_voice_with_short_pauses_stays_one_segment():
+    from app.speakers import SpeakerTracker
+
+    from .fakes import FakeEmbedder
+
+    seg, _ = make()
+    seg.speakers = SpeakerTracker(FakeEmbedder())
+    audio = np.concatenate([tone(1.5, 220), silence(0.4), tone(1.5, 220), silence(1.0)])
+    [segment] = finals(feed(seg, audio))
+    assert (segment.text, segment.speaker) == ("speech 3.0s", "S1")

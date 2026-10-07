@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from app.speakers import SpeakerTracker
 
@@ -58,3 +59,45 @@ def test_refine_without_embeddings_keeps_live_labels():
     tracker = make()
     tracker.assign(0, tone(0.3))
     assert tracker.refine() == {0: None}
+
+
+# ---------------------------------------------------------------- voice profiles
+
+from app.speakers import VoiceProfile, enrol  # noqa: E402
+
+from .fakes import energy_vad  # noqa: E402
+
+
+def profile(pid, freq, name="X"):
+    p = enrol(FakeEmbedder(), energy_vad, tone(10.0, freq))
+    return VoiceProfile(pid, name, p["embedding"], p["mu"], p["sd"])
+
+
+def test_enrolment_needs_enough_speech():
+    with pytest.raises(ValueError, match="parole"):
+        enrol(FakeEmbedder(), energy_vad, tone(4.0))
+    p = enrol(FakeEmbedder(), energy_vad, tone(10.0))
+    assert p["seconds"] == 10.0 and p["sd"] >= 0.02
+
+
+def test_enrolled_voices_are_recognised_by_name():
+    tracker = make()
+    tracker.profiles = [profile("Paaaaaaaa", 220, "Awa"), profile("Pbbbbbbbb", 660, "Paul")]
+    labels = [tracker.assign(i, tone(2.0, f)) for i, f in enumerate([220, 660, 220])]
+    assert labels == ["Paaaaaaaa", "Pbbbbbbbb", "Paaaaaaaa"]
+
+
+def test_unknown_voice_becomes_a_guest_and_stays_one_after_refine():
+    tracker = make()
+    tracker.profiles = [profile("Paaaaaaaa", 220)]
+    labels = [tracker.assign(i, tone(2.0, f)) for i, f in enumerate([220, 660, 660, 220])]
+    assert labels == ["Paaaaaaaa", "S1", "S1", "Paaaaaaaa"]
+    assert tracker.refine() == {0: "Paaaaaaaa", 1: "S1", 2: "S1", 3: "Paaaaaaaa"}
+
+
+def test_short_reply_goes_to_the_closest_profile():
+    # 1 s is too short to declare an unknown voice: the best profile wins.
+    tracker = make()
+    tracker.profiles = [profile("Paaaaaaaa", 220), profile("Pbbbbbbbb", 660)]
+    tracker.assign(0, tone(2.0, 220))
+    assert tracker.assign(1, tone(0.8, 660)) == "Pbbbbbbbb"

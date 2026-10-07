@@ -15,6 +15,7 @@ import numpy as np
 
 from app.config import SAMPLE_RATE, get_settings
 from app.speakers import SherpaEmbedder, SpeakerTracker
+from app.storage import ProfileStore
 from app.streaming import StreamingSegmenter, silero_vad
 from app.transcriber import WhisperTranscriber
 
@@ -25,6 +26,7 @@ def main():
     parser.add_argument("--speaker-threshold", type=float)
     parser.add_argument("--merge-threshold", type=float)
     parser.add_argument("--language", choices=["fr", "en"])
+    parser.add_argument("--no-profiles", action="store_true", help="ignore enrolled voices")
     args = parser.parse_args()
 
     settings = get_settings()
@@ -36,7 +38,9 @@ def main():
         SherpaEmbedder(str(settings.speaker_model)),
         threshold=args.speaker_threshold or settings.speaker_threshold,
         merge_threshold=args.merge_threshold or settings.speaker_merge_threshold,
+        profiles=[] if args.no_profiles else ProfileStore(settings.data_dir).voices(),
     )
+    names = {p.id: p.name for p in tracker.profiles}
     segmenter = StreamingSegmenter(
         WhisperTranscriber(settings), silero_vad(settings.vad_threshold), settings,
         language=args.language, speakers=tracker,
@@ -56,8 +60,9 @@ def main():
     print(f"{len(audio) / SAMPLE_RATE:.0f} s of audio processed in {time.time() - t0:.0f} s\n")
 
     for s in segments:
+        label = lambda spk: names.get(spk, spk or "-")  # noqa: E731
         print(f"#{s.id:<3} {s.start:7.1f}-{s.end:7.1f} {s.language} "
-              f"live={live[s.id] or '-':4} refined={refined[s.id] or '-':4} {s.text}")
+              f"live={label(live[s.id]):12} refined={label(refined[s.id]):12} {s.text}")
 
     items = [it for it in tracker._items if it.embedding is not None]
     if len(items) > 1:

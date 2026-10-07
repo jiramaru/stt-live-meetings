@@ -18,6 +18,9 @@
     <button class="btn btn-ghost new-btn" id="newBtn">
       <span class="material-symbols-outlined">add</span> Nouvelle réunion
     </button>
+    <button class="btn btn-ghost new-btn" id="profilesBtn">
+      <span class="material-symbols-outlined">record_voice_over</span> Profils vocaux
+    </button>
     <div class="sidebar-label">Historique</div>
     <ul class="session-list" id="sessionList"></ul>
   </aside>
@@ -79,6 +82,45 @@
     </footer>
     <div class="toast" id="toast" role="status"></div>
   </main>
+
+  <div class="overlay" id="profilesDialog" hidden>
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="profilesTitle">
+      <header class="dialog-head">
+        <h2 id="profilesTitle">Profils vocaux</h2>
+        <button class="icon-btn" id="profilesClose" aria-label="Fermer">
+          <span class="material-symbols-outlined">close</span>
+        </button>
+      </header>
+      <p class="dialog-intro">Chaque personne inscrite est reconnue par son nom dans les transcriptions.
+        Seule l'empreinte de la voix est conservée, jamais l'enregistrement.</p>
+      <ul class="profile-list" id="profileList"></ul>
+
+      <section class="enrol">
+        <h3>Ajouter une voix</h3>
+        <input class="text-input" id="enrolName" placeholder="Nom de la personne" maxlength="80" autocomplete="off">
+        <label class="consent">
+          <input type="checkbox" id="enrolConsent">
+          <span>La personne accepte que l'empreinte de sa voix soit enregistrée pour la reconnaître
+            dans les transcriptions, et sait qu'elle peut en demander la suppression à tout moment.</span>
+        </label>
+        <div class="enrol-read" id="enrolRead" hidden>
+          <p class="hint">Lisez ce texte d'une voix naturelle, à votre place habituelle autour du micro de réunion :</p>
+          <blockquote>Bonjour à tous. Je participe régulièrement aux réunions de l'équipe, et ce court
+            enregistrement permet à l'application de reconnaître ma voix. Nous parlons souvent des projets
+            en cours, du calendrier des prochaines étapes et des décisions à prendre ensemble. Je lis
+            maintenant ce texte sans me presser, comme je parlerais pendant une réunion ordinaire.
+            Je vous remercie de votre attention, et je vous souhaite une excellente journée.</blockquote>
+          <div class="enrol-progress"><div id="enrolBar"></div></div>
+        </div>
+        <div class="enrol-actions">
+          <button class="btn primary" id="enrolBtn">
+            <span class="material-symbols-outlined">mic</span><span id="enrolBtnLabel">Enregistrer la voix</span>
+          </button>
+          <span class="enrol-status" id="enrolStatus" role="status"></span>
+        </div>
+      </section>
+    </div>
+  </div>
 
   <script src="/static/app.js" type="module"></script>
 </body>

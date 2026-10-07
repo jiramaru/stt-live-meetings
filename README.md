@@ -8,7 +8,8 @@ the machine and no internet connection is needed once the model is downloaded.
 
 - French and English, detected automatically per segment (or forced)
 - Live partial text while someone speaks, final text after each pause
-- Speaker labels ("Intervenant 1, 2...") from a single microphone; click a label to rename that person everywhere
+- Speaker labels from a single microphone: team members enrol their voice once (voice profiles)
+  and are then named automatically; unknown voices appear as "Intervenant 1, 2..."
 - Meeting title editable at any time, even while recording
 - Sessions saved automatically, with a history sidebar
 - Export to Word (.docx), TXT, SRT subtitles and Markdown, with speaker names
@@ -114,6 +115,18 @@ pytest
 
 The tests use a fake transcriber and an energy-based VAD, so they run without
 downloading a model.
+
+## Voice profiles
+
+Like a phone's voice unlock: each team member reads a short text (15-30 s) once,
+from the sidebar (**Profils vocaux**), ideally in the meeting room with the
+meeting microphone. The server keeps only the voice print (a 256-number vector)
+and its calibration, never the recording. A profile can be renamed or deleted
+at any time; enrolment requires the person's consent.
+
+In a meeting, each stretch of speech is compared with the profiles, relative to
+how much each person's own voice varies. A segment where people answer each
+other without a real pause is cut between them, using Whisper's word timings.
 
 ## Speaker labels: how well it works
 

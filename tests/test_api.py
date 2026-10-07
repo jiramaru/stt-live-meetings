@@ -1,4 +1,5 @@
 import time
+from urllib.parse import quote
 
 import numpy as np
 import pytest
@@ -186,3 +187,42 @@ def test_pause_and_resume_stay_in_the_same_meeting(client):
     # Timestamps follow the recorded audio: no gap for the pause.
     assert session["segments"][1]["start"] < 2.0
     assert [s["id"] for s in session["segments"]] == [0, 1, 2]
+
+
+def test_voice_profiles_are_enrolled_and_recognised_by_name(client):
+    def enrol(name, freq):
+        r = client.post(
+            "/api/profiles",
+            content=pcm16(tone(10.0, freq)),
+            headers={"X-Profile-Name": quote(name), "X-Consent": "yes"},
+        )
+        assert r.status_code == 201, r.text
+        return r.json()
+
+    awa = enrol("Awa Mbemba", 220)
+    assert "embedding" not in awa  # the voice print never leaves the server
+    assert [p["name"] for p in client.get("/api/profiles").json()] == ["Awa Mbemba"]
+
+    audio = np.concatenate([tone(1.5, 220), silence(1.2), tone(1.5, 660), silence(1.2)])
+    _, messages = record(client, audio)
+    finals = [m for m in messages if m["type"] == "final"]
+    assert finals[0]["segment"]["speaker"] == awa["id"]
+    assert finals[0]["speakers"] == {awa["id"]: "Awa Mbemba"}
+    assert finals[1]["segment"]["speaker"] == "S1"  # unknown voice
+
+    session = messages[-1]["session"]
+    txt = client.get(f"/api/sessions/{session['id']}/export?format=txt").text
+    assert "Awa Mbemba :" in txt and "Intervenant 1 :" in txt
+
+    assert client.patch(f"/api/profiles/{awa['id']}", json={"name": "Awa M."}).json()["name"] == "Awa M."
+    assert client.delete(f"/api/profiles/{awa['id']}").status_code == 204
+    assert client.get("/api/profiles").json() == []
+
+
+def test_enrolment_requires_consent_and_enough_speech(client):
+    headers = {"X-Profile-Name": "Bob"}
+    assert client.post("/api/profiles", content=pcm16(tone(10.0)), headers=headers).status_code == 400
+    r = client.post(
+        "/api/profiles", content=pcm16(tone(3.0)), headers={**headers, "X-Consent": "yes"}
+    )
+    assert r.status_code == 422 and "parole" in r.json()["detail"]

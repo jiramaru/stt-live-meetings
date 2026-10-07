@@ -19,13 +19,14 @@ from typing import Callable
 import numpy as np
 
 from .config import SAMPLE_RATE, Settings
-from .speakers import SpeakerTracker
-from .transcriber import Transcriber
+from .speakers import SpeakerTracker, _normalize
+from .transcriber import Transcriber, Transcription, clean_text
 
 # (start, end) sample offsets of speech regions within the given audio
 VadFn = Callable[[np.ndarray], list[tuple[int, int]]]
 
 PAD = int(0.2 * SAMPLE_RATE)  # audio kept around speech so words are not clipped
+TURN_GAP = int(0.25 * SAMPLE_RATE)  # shorter pauses do not separate two turns
 
 
 def silero_vad(threshold: float = 0.5) -> VadFn:
@@ -148,25 +149,88 @@ class StreamingSegmenter:
         # In auto mode the previous segment's language is tried first; the
         # transcriber re-detects when the result looks unreliable.
         result = self.transcriber.transcribe(
-            audio, language=self.language, hint=self._partial_language
+            audio, language=self.language, hint=self._partial_language, words=bool(self.speakers)
         )
 
         if result.text:
-            segment = Segment(
-                id=self._next_id,
-                start=(self._offset + start) / SAMPLE_RATE,
-                end=(self._offset + end) / SAMPLE_RATE,
-                text=result.text,
-                language=result.language,
-            )
-            if self.speakers:
-                segment.speaker = self.speakers.assign(segment.id, audio)
-            self._next_id += 1
-            events.append(Event(type="final", segment=segment))
+            base = (self._offset + start) / SAMPLE_RATE
+            for text, t0, t1, speaker, voice in self._turns(audio, result):
+                segment = Segment(
+                    id=self._next_id,
+                    start=base + t0,
+                    end=base + t1,
+                    text=text,
+                    language=result.language,
+                    speaker=speaker,
+                )
+                if self.speakers:
+                    self.speakers.record(segment.id, t1 - t0, voice, speaker)
+                self._next_id += 1
+                events.append(Event(type="final", segment=segment))
             self._partial_language = result.language
 
         self._drop(end)
         return events
+
+    def _turns(self, audio: np.ndarray, result: Transcription):
+        """Split a transcribed segment where the speaker changes.
+
+        People often answer each other with pauses too short to close the
+        segment. Each stretch of speech inside it gets its own voice match,
+        and the words are shared out by their timing.
+        Yields (text, start, end, speaker, voice embedding), times in seconds.
+        """
+        whole = (result.text, 0.0, len(audio) / SAMPLE_RATE)
+        if not self.speakers:
+            yield (*whole, None, None)
+            return
+
+        regions = []
+        for s, e in self.vad(audio):
+            if regions and s - regions[-1][1] < TURN_GAP:
+                regions[-1] = (regions[-1][0], e)
+            else:
+                regions.append((s, e))
+        if len(regions) < 2 or not result.words:
+            speaker, voice = self.speakers.classify(audio)
+            yield (*whole, speaker, voice)
+            return
+
+        # Consecutive stretches with the same voice form one turn.
+        turns: list[dict] = []
+        previous = None
+        for s, e in regions:
+            speaker, voice = self.speakers.classify(
+                audio[max(0, s - PAD // 2) : e + PAD // 2], previous=previous
+            )
+            previous = speaker
+            if turns and turns[-1]["speaker"] == speaker:
+                turns[-1]["end"] = e
+            else:
+                turns.append({"speaker": speaker, "start": s, "end": e, "voices": [], "words": []})
+            if voice is not None:
+                turns[-1]["voices"].append(voice * (e - s))
+
+        if len(turns) == 1:  # one voice throughout: keep Whisper's own text
+            t = turns[0]
+            voice = _normalize(np.sum(t["voices"], axis=0)) if t["voices"] else None
+            yield (*whole, t["speaker"], voice)
+            return
+
+        for w0, w1, word in result.words:
+            mid = (w0 + w1) / 2 * SAMPLE_RATE
+            turn = min(turns, key=lambda t: 0 if t["start"] <= mid <= t["end"]
+                       else min(abs(mid - t["start"]), abs(mid - t["end"])))
+            turn["words"].append(word)
+
+        for t in turns:
+            text = clean_text("".join(t["words"]))
+            if not text:
+                continue
+            voice = _normalize(np.sum(t["voices"], axis=0)) if t["voices"] else None
+            start = max(0, t["start"] - PAD) / SAMPLE_RATE
+            end = min(len(audio), t["end"] + PAD) / SAMPLE_RATE
+            yield text, start, end, t["speaker"], voice
 
     def _partial_from(self, start: int) -> list[Event]:
         audio = self._buffer[max(0, start - PAD) :]

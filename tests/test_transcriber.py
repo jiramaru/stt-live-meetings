@@ -11,7 +11,7 @@ def stub(scores: dict[str, float], detected: str, probability: float = 0.95):
     t = WhisperTranscriber.__new__(WhisperTranscriber)
     t.calls = []
 
-    def run(audio, language, fast):
+    def run(audio, language, fast, words=False):
         t.calls.append(language)
         return Transcription(text=f"text-{language}", language=language, logprob=scores[language])
 

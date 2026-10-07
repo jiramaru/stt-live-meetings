@@ -67,3 +67,82 @@ class SessionStore:
             raise KeyError(session_id)
         path.unlink()
         self.audio_path(session_id).unlink(missing_ok=True)
+
+
+class ProfileStore:
+    """Voice profiles, one JSON file each. Only the voice print is kept, never
+    the enrolment audio."""
+
+    _ID_RE = re.compile(r"^P[0-9a-f]{8}$")
+
+    def __init__(self, data_dir: Path):
+        self.dir = Path(data_dir) / "profiles"
+        self.dir.mkdir(parents=True, exist_ok=True)
+
+    def _path(self, profile_id: str) -> Path:
+        if not self._ID_RE.match(profile_id):
+            raise KeyError(profile_id)
+        return self.dir / f"{profile_id}.json"
+
+    def create(self, name: str, print_: dict) -> dict:
+        profile = {
+            "id": "P" + uuid.uuid4().hex[:8],
+            "name": name.strip()[:80],
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "seconds": print_["seconds"],
+            "mu": print_["mu"],
+            "sd": print_["sd"],
+            "embedding": [round(float(x), 6) for x in print_["embedding"]],
+        }
+        self._write(profile)
+        return self.public(profile)
+
+    def _write(self, profile: dict) -> None:
+        path = self._path(profile["id"])
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(profile, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(path)
+
+    def _read(self, profile_id: str) -> dict:
+        path = self._path(profile_id)
+        if not path.exists():
+            raise KeyError(profile_id)
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    @staticmethod
+    def public(profile: dict) -> dict:
+        """What the API shows: everything but the voice print itself."""
+        return {k: profile[k] for k in ("id", "name", "created_at", "seconds")}
+
+    def list(self) -> list[dict]:
+        profiles = [json.loads(p.read_text(encoding="utf-8")) for p in self.dir.glob("P*.json")]
+        return sorted((self.public(p) for p in profiles), key=lambda p: p["name"].lower())
+
+    def rename(self, profile_id: str, name: str) -> dict:
+        profile = self._read(profile_id)
+        profile["name"] = name.strip()[:80] or profile["name"]
+        self._write(profile)
+        return self.public(profile)
+
+    def delete(self, profile_id: str) -> None:
+        path = self._path(profile_id)
+        if not path.exists():
+            raise KeyError(profile_id)
+        path.unlink()
+
+    def voices(self):
+        """All profiles, ready for matching."""
+        import numpy as np
+
+        from .speakers import VoiceProfile
+
+        return [
+            VoiceProfile(
+                id=p["id"],
+                name=p["name"],
+                embedding=np.asarray(p["embedding"], dtype=np.float32),
+                mu=p["mu"],
+                sd=p["sd"],
+            )
+            for p in (json.loads(f.read_text(encoding="utf-8")) for f in self.dir.glob("P*.json"))
+        ]

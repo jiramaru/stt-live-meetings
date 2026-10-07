@@ -22,6 +22,7 @@ import logging
 import re
 import threading
 import wave
+from urllib.parse import unquote
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -29,21 +30,22 @@ from pathlib import Path
 from typing import Callable
 
 import numpy as np
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .config import SAMPLE_RATE, Settings, get_settings
 from .exporters import EXPORTERS
-from .speakers import Embedder, SherpaEmbedder, SpeakerTracker
-from .storage import SessionStore
+from .speakers import Embedder, SherpaEmbedder, SpeakerTracker, enrol
+from .storage import ProfileStore, SessionStore
 from .streaming import StreamingSegmenter, VadFn, silero_vad
 from .transcriber import Transcriber, WhisperTranscriber
 
 log = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).parent / "static"
-SPEAKER_ID_RE = re.compile(r"^S\d{1,4}$")
+SPEAKER_ID_RE = re.compile(r"^(S\d{1,4}|P[0-9a-f]{8})$")  # unknown voice | voice profile
+ENROL_MAX_BYTES = 60 * SAMPLE_RATE * 2  # one minute of 16-bit audio
 
 
 @dataclass
@@ -92,6 +94,10 @@ def default_loader(settings: Settings) -> Callable[[], Components]:
     return load
 
 
+class ProfileUpdate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=80)
+
+
 class SessionUpdate(BaseModel):
     title: str | None = Field(None, max_length=120)
     speakers: dict[str, str] | None = None  # speaker id -> display name ("" = default)
@@ -104,6 +110,7 @@ def create_app(
     settings = settings or get_settings()
     engine = Engine(loader or default_loader(settings))
     store = SessionStore(settings.data_dir)
+    profiles = ProfileStore(settings.data_dir)
     # Sessions being recorded, by id. Edits go through these dicts so the
     # recorder's next save does not overwrite them. Every access happens on
     # the event loop (async handlers), so no lock is needed.
@@ -128,6 +135,51 @@ def create_app(
             "languages": settings.language_list,
             "diarization": bool(engine.parts and engine.parts.embedder),
         }
+
+    # -------------------------------------------------------------- voice profiles
+
+    @app.get("/api/profiles")
+    def list_profiles():
+        return profiles.list()
+
+    @app.post("/api/profiles", status_code=201)
+    async def create_profile(request: Request):
+        """Body: 16 kHz mono 16-bit PCM of the person reading.
+        Headers: X-Profile-Name (URL-encoded), X-Consent: yes."""
+        if request.headers.get("x-consent") != "yes":
+            raise HTTPException(400, "Le consentement de la personne est requis.")
+        name = unquote(request.headers.get("x-profile-name", "")).strip()
+        if not name:
+            raise HTTPException(400, "Le nom est requis.")
+        if not (engine.parts and engine.parts.embedder):
+            raise HTTPException(503, "Le modèle de reconnaissance des voix n'est pas chargé.")
+        body = await request.body()
+        if len(body) > ENROL_MAX_BYTES:
+            raise HTTPException(413, "Enregistrement trop long (une minute au plus).")
+        audio = np.frombuffer(body[: len(body) // 2 * 2], dtype="<i2").astype(np.float32) / 32768
+        try:
+            print_ = await asyncio.to_thread(
+                enrol, engine.parts.embedder, engine.parts.vad, audio
+            )
+        except ValueError as exc:
+            raise HTTPException(422, str(exc))
+        return profiles.create(name, print_)
+
+    @app.patch("/api/profiles/{profile_id}")
+    def rename_profile(profile_id: str, update: ProfileUpdate):
+        try:
+            return profiles.rename(profile_id, update.name)
+        except KeyError:
+            raise HTTPException(404, "Profil introuvable")
+
+    @app.delete("/api/profiles/{profile_id}", status_code=204)
+    def delete_profile(profile_id: str):
+        try:
+            profiles.delete(profile_id)
+        except KeyError:
+            raise HTTPException(404, "Profil introuvable")
+
+    # -------------------------------------------------------------- sessions
 
     @app.get("/api/sessions")
     def list_sessions():
@@ -203,7 +255,7 @@ def create_app(
             await ws.close()
             return
         try:
-            await run_session(ws, engine.parts, store, live, settings)
+            await run_session(ws, engine.parts, store, profiles, live, settings)
         except (WebSocketDisconnect, RuntimeError):
             pass  # client left; the session was saved by run_session
 
@@ -216,7 +268,12 @@ def create_app(
 
 
 async def run_session(
-    ws: WebSocket, parts: Components, store: SessionStore, live: dict, settings: Settings
+    ws: WebSocket,
+    parts: Components,
+    store: SessionStore,
+    profiles: ProfileStore,
+    live: dict,
+    settings: Settings,
 ):
     start = await ws.receive_json()
     if start.get("type") != "start":
@@ -239,7 +296,9 @@ async def run_session(
             parts.embedder,
             threshold=settings.speaker_threshold,
             merge_threshold=settings.speaker_merge_threshold,
+            profiles=profiles.voices(),
         )
+    names = {p.id: p.name for p in (tracker.profiles if tracker else [])}
     segmenter = StreamingSegmenter(
         parts.transcriber, parts.vad, settings, language=language, speakers=tracker
     )
@@ -288,9 +347,18 @@ async def run_session(
     async def emit(events):
         for event in events:
             if event.type == "final":
+                speaker = event.segment.speaker
+                # A recognised profile: the transcript shows the person's name
+                # (unless renamed in this meeting).
+                if speaker in names and speaker not in session["speakers"]:
+                    session["speakers"][speaker] = names[speaker]
                 session["segments"].append(event.segment.to_dict())
                 store.save(session)
-                await ws.send_json({"type": "final", "segment": event.segment.to_dict()})
+                await ws.send_json({
+                    "type": "final",
+                    "segment": event.segment.to_dict(),
+                    "speakers": session["speakers"],
+                })
             else:
                 await ws.send_json({"type": "partial", "text": event.text})
 

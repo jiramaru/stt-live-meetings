@@ -22,6 +22,17 @@ const els = {
   stopBtn: $("stopBtn"),
   exportGroup: $("exportGroup"),
   toast: $("toast"),
+  profilesBtn: $("profilesBtn"),
+  profilesDialog: $("profilesDialog"),
+  profilesClose: $("profilesClose"),
+  profileList: $("profileList"),
+  enrolName: $("enrolName"),
+  enrolConsent: $("enrolConsent"),
+  enrolRead: $("enrolRead"),
+  enrolBar: $("enrolBar"),
+  enrolBtn: $("enrolBtn"),
+  enrolBtnLabel: $("enrolBtnLabel"),
+  enrolStatus: $("enrolStatus"),
 };
 
 const state = {
@@ -133,6 +144,7 @@ function openMenu(anchor, items) {
   const onKey = (e) => {
     const i = buttons.indexOf(document.activeElement);
     if (e.key === "Escape") {
+      e.stopPropagation(); // close only the menu, not a dialog behind it
       closeMenu();
       anchor.focus();
     } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
@@ -177,12 +189,20 @@ function speakerName(id) {
   return state.speakers[id] || `Intervenant ${id.slice(1)}`;
 }
 
+// Unknown voices "S3" take color 3; voice profiles "P3fa9c2d1" a color
+// derived from their id, so a person keeps the same color in every meeting.
+function speakerColor(id) {
+  let n = parseInt(id.slice(1), 10) - 1;
+  if (id.startsWith("P")) n = [...id].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7);
+  return `var(--spk-${(n % SPEAKER_COLORS) + 1})`;
+}
+
 // A speaker heading: colored name label plus a "more_vert" action menu.
 function speakerTag(id) {
   const tag = document.createElement("div");
   tag.className = "speaker-tag";
   tag.dataset.speaker = id;
-  tag.style.setProperty("--spk", `var(--spk-${(parseInt(id.slice(1), 10) - 1) % SPEAKER_COLORS + 1})`);
+  tag.style.setProperty("--spk", speakerColor(id));
 
   const chip = document.createElement("span");
   chip.className = "speaker-chip";
@@ -438,7 +458,9 @@ function updateRecordButton() {
   els.newBtn.disabled = state.recording;
 }
 
-async function startAudio() {
+// Opens the microphone and calls onChunk({ pcm, level }) about every 100 ms
+// with 16 kHz 16-bit PCM. Returns a function that releases the microphone.
+async function openMic(onChunk) {
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: {
       channelCount: 1,
@@ -453,21 +475,27 @@ async function startAudio() {
   await ctx.audioWorklet.addModule("/static/pcm-worklet.js");
   const source = ctx.createMediaStreamSource(stream);
   const node = new AudioWorkletNode(ctx, "pcm-processor");
-  node.port.onmessage = ({ data }) => {
-    els.meterFill.style.width = `${Math.min(100, data.level * 400)}%`;
-    if (state.ws?.readyState === WebSocket.OPEN) state.ws.send(data.pcm);
-  };
+  node.port.onmessage = ({ data }) => onChunk(data);
   source.connect(node);
-  state.audio = { ctx, stream, node, source };
+  return () => {
+    source.disconnect();
+    node.port.onmessage = null;
+    stream.getTracks().forEach((t) => t.stop());
+    ctx.close();
+  };
+}
+
+async function startAudio() {
+  const release = await openMic(({ pcm, level }) => {
+    els.meterFill.style.width = `${Math.min(100, level * 400)}%`;
+    if (state.ws?.readyState === WebSocket.OPEN) state.ws.send(pcm);
+  });
+  state.audio = { release };
 }
 
 function stopAudio() {
   if (!state.audio) return;
-  const { ctx, stream, node, source } = state.audio;
-  source.disconnect();
-  node.port.onmessage = null;
-  stream.getTracks().forEach((t) => t.stop());
-  ctx.close();
+  state.audio.release();
   state.audio = null;
   els.meterFill.style.width = "0";
 }
@@ -497,6 +525,7 @@ function openSocket() {
           setPartial(msg.text);
           break;
         case "final":
+          if (msg.speakers) state.speakers = msg.speakers;
           addSegment(msg.segment);
           break;
         case "paused":
@@ -683,7 +712,190 @@ function openTitleMenu() {
   openMenu(els.titleMenuBtn, items);
 }
 
+// ---------------------------------------------------------------- voice profiles
+
+const ENROL_MIN_SECONDS = 15; // enough speech for a reliable voice print
+const ENROL_MAX_SECONDS = 30;
+let enrolment = null; // { release, chunks, startedAt, timer } while recording
+
+function openProfiles() {
+  els.profilesDialog.hidden = false;
+  loadProfiles();
+  els.enrolName.focus();
+}
+
+function closeProfiles() {
+  if (enrolment) return; // finish or cancel the recording first
+  closeMenu();
+  els.profilesDialog.hidden = true;
+}
+
+async function loadProfiles() {
+  const profiles = await (await fetch("/api/profiles")).json();
+  if (profiles.length === 0) {
+    const li = document.createElement("li");
+    li.className = "empty-row";
+    li.textContent = "Aucune voix inscrite pour l'instant.";
+    els.profileList.replaceChildren(li);
+    return;
+  }
+  els.profileList.replaceChildren(...profiles.map(profileRow));
+}
+
+function profileRow(p) {
+  const li = document.createElement("li");
+  li.style.setProperty("--spk", speakerColor(p.id));
+  const person = icon("account_circle");
+  person.classList.add("person");
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  const name = document.createElement("div");
+  name.className = "name";
+  name.textContent = p.name;
+  const sub = document.createElement("div");
+  sub.className = "sub";
+  sub.textContent = `Inscrite le ${new Date(p.created_at).toLocaleDateString("fr-FR")} · ${Math.round(p.seconds)} s de parole`;
+  meta.append(name, sub);
+
+  const more = document.createElement("button");
+  more.className = "icon-btn more-btn";
+  more.title = "Actions";
+  more.setAttribute("aria-label", `Actions sur ${p.name}`);
+  more.setAttribute("aria-haspopup", "menu");
+  more.append(icon("more_vert"));
+  more.addEventListener("click", () => openMenu(more, [
+    { icon: "edit", label: "Renommer", action: () => renameProfile(p, name) },
+    {
+      icon: "delete",
+      label: "Supprimer la voix",
+      confirm: "Confirmer la suppression",
+      danger: true,
+      action: async () => {
+        await fetch(`/api/profiles/${p.id}`, { method: "DELETE" });
+        loadProfiles();
+      },
+    },
+  ]));
+  li.append(person, meta, more);
+  return li;
+}
+
+function renameProfile(p, nameEl) {
+  const input = document.createElement("input");
+  input.className = "text-input";
+  input.value = p.name;
+  input.maxLength = 80;
+  let done = false;
+  const finish = async (save) => {
+    if (done) return;
+    done = true;
+    const name = input.value.trim();
+    if (save && name && name !== p.name) {
+      await fetch(`/api/profiles/${p.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+    }
+    loadProfiles();
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") finish(true);
+    if (e.key === "Escape") finish(false);
+  });
+  input.addEventListener("blur", () => finish(true));
+  nameEl.replaceWith(input);
+  input.focus();
+  input.select();
+}
+
+function setEnrolStatus(text, error = false) {
+  els.enrolStatus.textContent = text;
+  els.enrolStatus.classList.toggle("error", error);
+}
+
+async function toggleEnrolment() {
+  if (enrolment) return finishEnrolment();
+  if (state.recording) return setEnrolStatus("Terminez d'abord la réunion en cours.", true);
+  if (!els.enrolName.value.trim()) return setEnrolStatus("Indiquez le nom de la personne.", true);
+  if (!els.enrolConsent.checked) return setEnrolStatus("Le consentement de la personne est requis.", true);
+
+  const chunks = [];
+  let release;
+  try {
+    release = await openMic(({ pcm }) => chunks.push(new Int16Array(pcm)));
+  } catch (err) {
+    return setEnrolStatus(err.name === "NotAllowedError" ? "Accès au micro refusé." : err.message, true);
+  }
+  enrolment = { release, chunks, startedAt: performance.now() };
+  els.enrolRead.hidden = false;
+  els.enrolBtn.classList.add("recording");
+  els.enrolBtn.querySelector(".material-symbols-outlined").textContent = "stop";
+  els.enrolName.disabled = els.enrolConsent.disabled = true;
+  setEnrolStatus("Lisez le texte…");
+  enrolment.timer = setInterval(() => {
+    const elapsed = (performance.now() - enrolment.startedAt) / 1000;
+    els.enrolBar.style.width = `${Math.min(100, (elapsed / ENROL_MAX_SECONDS) * 100)}%`;
+    els.enrolBtn.disabled = elapsed < ENROL_MIN_SECONDS;
+    els.enrolBtnLabel.textContent = elapsed < ENROL_MIN_SECONDS
+      ? `Encore ${Math.ceil(ENROL_MIN_SECONDS - elapsed)} s`
+      : "Terminer";
+    if (elapsed >= ENROL_MAX_SECONDS) finishEnrolment();
+  }, 200);
+}
+
+async function finishEnrolment() {
+  const { release, chunks, timer } = enrolment;
+  clearInterval(timer);
+  release();
+  enrolment = null;
+  els.enrolBtn.disabled = true;
+  els.enrolBtnLabel.textContent = "Analyse…";
+  setEnrolStatus("Calcul de l'empreinte vocale…");
+
+  const res = await fetch("/api/profiles", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/octet-stream",
+      "X-Profile-Name": encodeURIComponent(els.enrolName.value.trim()),
+      "X-Consent": "yes",
+    },
+    body: new Blob(chunks),
+  });
+  resetEnrolForm();
+  if (!res.ok) {
+    const { detail } = await res.json().catch(() => ({}));
+    setEnrolStatus(detail || "L'inscription a échoué.", true);
+    return;
+  }
+  const profile = await res.json();
+  els.enrolName.value = "";
+  els.enrolConsent.checked = false;
+  setEnrolStatus(`Voix de ${profile.name} enregistrée.`);
+  loadProfiles();
+}
+
+function resetEnrolForm() {
+  els.enrolRead.hidden = true;
+  els.enrolBar.style.width = "0";
+  els.enrolBtn.disabled = false;
+  els.enrolBtn.classList.remove("recording");
+  els.enrolBtn.querySelector(".material-symbols-outlined").textContent = "mic";
+  els.enrolBtnLabel.textContent = "Enregistrer la voix";
+  els.enrolName.disabled = els.enrolConsent.disabled = false;
+}
+
 // ---------------------------------------------------------------- wiring
+
+els.profilesBtn.addEventListener("click", openProfiles);
+els.profilesClose.addEventListener("click", closeProfiles);
+els.profilesDialog.addEventListener("click", (e) => {
+  if (e.target === els.profilesDialog) closeProfiles();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !els.profilesDialog.hidden) closeProfiles();
+});
+els.enrolBtn.addEventListener("click", toggleEnrolment);
 
 els.titleMenuBtn.addEventListener("click", openTitleMenu);
 els.recordBtn.addEventListener("click", () => {

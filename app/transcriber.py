@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import re
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 import numpy as np
@@ -48,6 +48,9 @@ class Transcription:
     text: str
     language: str | None
     logprob: float = 0.0  # average token log-probability (confidence), -inf if empty
+    # (start, end, text) of each word, in seconds from the start of the audio,
+    # when requested with words=True
+    words: list[tuple[float, float, str]] = field(default_factory=list)
 
 
 class Transcriber(Protocol):
@@ -57,6 +60,7 @@ class Transcriber(Protocol):
         language: str | None = None,
         fast: bool = False,
         hint: str | None = None,
+        words: bool = False,
     ) -> Transcription: ...
 
     def detect_language(self, audio: np.ndarray) -> str | None: ...
@@ -115,6 +119,7 @@ class WhisperTranscriber:
         language: str | None = None,
         fast: bool = False,
         hint: str | None = None,
+        words: bool = False,
     ) -> Transcription:
         """Transcribe in `language`, or detect it when None.
 
@@ -125,27 +130,31 @@ class WhisperTranscriber:
         `fast` (used for partials) disables Whisper's temperature fallback,
         which re-decodes when the output looks unreliable; on CPU it can
         multiply the cost of a short, unclear chunk several times over.
+
+        `words` also returns each word's timing (used to split a segment
+        where the speaker changes).
         """
         if language is None and hint:
-            result = self._run(audio, hint, fast)
+            result = self._run(audio, hint, fast, words)
             if result.logprob >= LANGUAGE_CHECK_LOGPROB or len(audio) < MIN_DETECT_SECONDS * SAMPLE_RATE:
                 return result
             detected, probability = self._detect(audio)
             if detected in (None, hint) or probability < MIN_SWITCH_PROBABILITY:
                 return result
-            return self._run(audio, detected, fast)
+            return self._run(audio, detected, fast, words)
         if language is None:
             language = self.detect_language(audio) or (self.languages[0] if self.languages else None)
-        return self._run(audio, language, fast)
+        return self._run(audio, language, fast, words)
 
-    def _run(self, audio: np.ndarray, language: str | None, fast: bool):
+    def _run(self, audio: np.ndarray, language: str | None, fast: bool, words: bool = False):
         with self._lock:
             segments, info = self.model.transcribe(
                 audio,
                 language=language,
                 beam_size=1 if fast else self.settings.beam_size,
                 temperature=0.0 if fast else [0.0, 0.4],
-                without_timestamps=True,
+                without_timestamps=not words,
+                word_timestamps=words,
                 # No previous text as prompt: on short or unclear audio Whisper
                 # copies the prompt instead of listening, and errors snowball.
                 condition_on_previous_text=False,
@@ -161,4 +170,5 @@ class WhisperTranscriber:
             tokens = [max(1, len(s.tokens)) for s in kept]
             logprob = float(np.average([s.avg_logprob for s in kept], weights=tokens))
         text = clean_text(" ".join(s.text for s in kept))
-        return Transcription(text=text, language=info.language, logprob=logprob)
+        timed = [(w.start, w.end, w.word) for s in kept for w in (s.words or [])]
+        return Transcription(text=text, language=info.language, logprob=logprob, words=timed)

@@ -1,13 +1,16 @@
 """Speaker labelling ("who spoke when") from a single microphone.
 
-Each final segment is turned into a voice embedding: a vector that is close
-for two recordings of the same voice and far apart for different voices.
+Each stretch of speech is turned into a voice embedding: a vector that is
+close for two recordings of the same voice and far apart for different voices.
 
-- Live: every new segment is compared with the speakers met so far and joins
-  the closest one, or starts a new speaker when nobody is similar enough.
-- At the end of the meeting `refine()` re-clusters all segments with the full
-  picture, fixing early mistakes (a speaker split in two at the start, a short
-  segment given to the wrong person).
+- Voice profiles (like a phone's voice unlock): team members enrol once by
+  reading for ~20 s. Their embedding is compared with each new stretch of
+  speech, relative to how much their own voice varies (calibration).
+- Voices matching no profile are clustered among themselves: each new one is
+  compared with the unknown speakers met so far, and joins the closest or
+  starts a new speaker ("Intervenant N").
+- At the end of the meeting `refine()` re-clusters the unknown voices with
+  the full picture, fixing early mistakes.
 """
 
 from __future__ import annotations
@@ -22,7 +25,16 @@ from .config import SAMPLE_RATE
 
 log = logging.getLogger(__name__)
 
-MIN_EMBED_SECONDS = 1.0  # shorter segments carry too little voice to identify
+MIN_EMBED_SECONDS = 1.0  # shorter speech is too little to start a new speaker
+MIN_MATCH_SECONDS = 0.5  # shorter speech is too little to compare with profiles
+# A stretch of speech belongs to the best matching profile unless its
+# similarity falls this many standard deviations below the profile's own
+# enrolment consistency, and it is long enough to judge.
+GUEST_Z = 3.0
+GUEST_MIN_SECONDS = 1.5
+
+ENROL_WINDOW = 2.0  # seconds per enrolment window
+ENROL_MIN_SPEECH = 8.0  # seconds of speech needed to enrol a voice
 
 
 class Embedder(Protocol):
@@ -56,6 +68,46 @@ def _normalize(v: np.ndarray) -> np.ndarray:
 
 
 @dataclass
+class VoiceProfile:
+    id: str  # "P" + 8 hex digits, also used as the speaker id in transcripts
+    name: str
+    embedding: np.ndarray  # normalized
+    mu: float  # mean similarity of the enrolment windows to `embedding`
+    sd: float  # their spread: how much this voice varies
+
+    def z(self, embedding: np.ndarray) -> float:
+        return (float(self.embedding @ embedding) - self.mu) / self.sd
+
+
+def enrol(embedder: Embedder, vad, audio: np.ndarray) -> dict:
+    """Voice print from a recording of one person reading.
+
+    The speech is cut into 2 s windows; the profile is their average, and the
+    windows' similarity to it calibrates how much this voice varies.
+    Raises ValueError when there is not enough speech.
+    """
+    speech = [audio[s:e] for s, e in vad(audio)]
+    voiced = np.concatenate(speech) if speech else audio[:0]
+    seconds = len(voiced) / SAMPLE_RATE
+    if seconds < ENROL_MIN_SPEECH:
+        raise ValueError(
+            f"Seulement {seconds:.0f} s de parole détectée, il en faut au moins "
+            f"{ENROL_MIN_SPEECH:.0f}. Lisez le texte à voix haute, près du micro de réunion."
+        )
+    size, hop = int(ENROL_WINDOW * SAMPLE_RATE), int(ENROL_WINDOW * SAMPLE_RATE / 2)
+    windows = [voiced[i : i + size] for i in range(0, len(voiced) - size + 1, hop)]
+    E = np.stack([_normalize(embedder.embed(w)) for w in windows])
+    centroid = _normalize(E.mean(axis=0))
+    sims = E @ centroid
+    return {
+        "embedding": centroid,
+        "mu": float(sims.mean()),
+        "sd": max(float(sims.std()), 0.02),  # floor: a handful of windows can look too regular
+        "seconds": round(seconds, 1),
+    }
+
+
+@dataclass
 class _Item:
     segment_id: int
     duration: float
@@ -71,31 +123,57 @@ class SpeakerTracker:
     # averaged embeddings are less noisy: on real recordings, averages of the
     # same voice scored 0.75+ (5th percentile) and of different voices <= 0.58.
     merge_threshold: float = 0.7
+    profiles: list[VoiceProfile] = field(default_factory=list)
 
     _items: list[_Item] = field(default_factory=list)
     _centroids: dict[str, np.ndarray] = field(default_factory=dict)  # sum of embeddings
     _next: int = 1
 
     def assign(self, segment_id: int, audio: np.ndarray) -> str | None:
-        """Label a new segment live. Returns a speaker id such as 'S1'."""
-        duration = len(audio) / SAMPLE_RATE
-        embedding = None
-        if duration >= MIN_EMBED_SECONDS:
-            embedding = _normalize(self.embedder.embed(audio))
-
-        if embedding is None:
-            # Too short to tell ("oui", "d'accord"): most often the same person
-            # carries on, or it is a quick reply refine() will settle.
-            speaker = self._items[-1].speaker if self._items else None
-        else:
-            speaker = self._closest(embedding)
-            if speaker is None:
-                speaker = self._new_id()
-                self._centroids[speaker] = np.zeros_like(embedding)
-            self._centroids[speaker] += embedding * duration
-
-        self._items.append(_Item(segment_id, duration, embedding, speaker))
+        """Label a whole segment live. Returns a speaker id ('P...' or 'S1')."""
+        speaker, embedding = self.classify(audio)
+        self.record(segment_id, len(audio) / SAMPLE_RATE, embedding, speaker)
         return speaker
+
+    def classify(
+        self, audio: np.ndarray, previous: str | None = None
+    ) -> tuple[str | None, np.ndarray | None]:
+        """Who is speaking in this stretch of audio: (speaker id, embedding).
+
+        Too short to tell ("oui", "d'accord"): `previous` (by default the last
+        segment's speaker), since most often the same person carries on;
+        refine() settles the rest.
+        """
+        duration = len(audio) / SAMPLE_RATE
+        if previous is None and self._items:
+            previous = self._items[-1].speaker
+        min_seconds = MIN_MATCH_SECONDS if self.profiles else MIN_EMBED_SECONDS
+        if duration < min_seconds:
+            return previous, None
+        embedding = _normalize(self.embedder.embed(audio))
+
+        if self.profiles:
+            best = max(self.profiles, key=lambda p: p.z(embedding))
+            if best.z(embedding) >= -GUEST_Z or duration < GUEST_MIN_SECONDS:
+                return best.id, embedding
+        if duration < MIN_EMBED_SECONDS:
+            return previous, None
+
+        speaker = self._closest(embedding)
+        if speaker is None:
+            speaker = self._new_id()
+            self._centroids[speaker] = np.zeros_like(embedding)
+        self._centroids[speaker] += embedding * duration
+        return speaker, embedding
+
+    def record(
+        self, segment_id: int, duration: float, embedding: np.ndarray | None, speaker: str | None
+    ) -> None:
+        """Remember a final segment's voice, for refine()."""
+        self._items.append(_Item(segment_id, duration, embedding, speaker))
+
+    def _is_profile(self, speaker: str | None) -> bool:
+        return bool(speaker) and speaker.startswith("P")
 
     def refine(self, iterations: int = 10) -> dict[int, str | None]:
         """Re-cluster every segment with hindsight. Returns segment id -> speaker.
@@ -103,10 +181,18 @@ class SpeakerTracker:
         Speaker ids are kept stable where possible, so names given during the
         meeting stay attached to the same voice.
         """
-        known = [it for it in self._items if it.embedding is not None]
-        if not known:
-            return {it.segment_id: it.speaker for it in self._items}
+        # Profile matches are decided against enrolled voices: kept as they are.
+        # Only the unknown voices are re-clustered.
+        known = [
+            it for it in self._items
+            if it.embedding is not None and not self._is_profile(it.speaker)
+        ]
+        if known and self._centroids:
+            self._recluster(known, iterations)
+        self._fill_short_segments()
+        return {it.segment_id: it.speaker for it in self._items}
 
+    def _recluster(self, known: list[_Item], iterations: int) -> None:
         X = np.stack([it.embedding for it in known])
         w = np.array([it.duration for it in known])
         centroids = np.stack([_normalize(c) for c in self._centroids.values()])
@@ -124,6 +210,7 @@ class SpeakerTracker:
             new_ids[k]: centroids[k] * w[labels == k].sum() for k in range(len(centroids))
         }
 
+    def _fill_short_segments(self) -> None:
         # Short segments: same speaker as the neighbouring segment before,
         # or after for those at the very start.
         previous = None
@@ -138,8 +225,6 @@ class SpeakerTracker:
                 following = it.speaker
             elif it.speaker is None:
                 it.speaker = following
-
-        return {it.segment_id: it.speaker for it in self._items}
 
     # -- internals ---------------------------------------------------------
 

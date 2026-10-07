@@ -43,11 +43,17 @@ class FakeTranscriber:
     def detect_language(self, audio):
         return "fr"
 
-    def transcribe(self, audio, language=None, fast=False, hint=None):
+    def transcribe(self, audio, language=None, fast=False, hint=None, words=False):
         self.calls.append((len(audio), language))
-        voiced = sum(e - s for s, e in energy_vad(audio)) / SAMPLE_RATE
+        regions = energy_vad(audio)
+        voiced = sum(e - s for s, e in regions) / SAMPLE_RATE
         text = f"speech {voiced:.1f}s" if voiced else ""
-        return Transcription(text=text, language=language or "fr")
+        # One "word" per stretch of sound, timed like Whisper's word timestamps.
+        timed = [
+            (s / SAMPLE_RATE, e / SAMPLE_RATE, f" speech {(e - s) / SAMPLE_RATE:.1f}s")
+            for s, e in regions
+        ] if words else []
+        return Transcription(text=text, language=language or "fr", words=timed)
 
 
 class FakeEmbedder:
