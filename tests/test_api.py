@@ -226,3 +226,23 @@ def test_enrolment_requires_consent_and_enough_speech(client):
         "/api/profiles", content=pcm16(tone(3.0)), headers={**headers, "X-Consent": "yes"}
     )
     assert r.status_code == 422 and "parole" in r.json()["detail"]
+
+
+def test_segment_text_can_be_corrected(client):
+    session_id, _ = record(client, np.concatenate([tone(1.5), silence(1.2)]))
+    url = f"/api/sessions/{session_id}/segments/0"
+
+    r = client.patch(url, json={"text": "  Bonjour   à tous. "})
+    assert r.status_code == 200
+    assert r.json()["text"] == "Bonjour à tous."
+    assert r.json()["original"] == "speech 1.5s"  # the recognizer's version is kept
+
+    client.patch(url, json={"text": "Bonjour à toutes et à tous."})
+    segment = client.get(f"/api/sessions/{session_id}").json()["segments"][0]
+    assert segment["text"] == "Bonjour à toutes et à tous."
+    assert segment["original"] == "speech 1.5s" and segment["edited"]
+    assert "Bonjour à toutes et à tous." in client.get(
+        f"/api/sessions/{session_id}/export?format=txt").text
+
+    assert client.patch(url, json={"text": "   "}).status_code == 400
+    assert client.patch(f"/api/sessions/{session_id}/segments/99", json={"text": "x"}).status_code == 404

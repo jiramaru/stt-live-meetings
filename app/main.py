@@ -98,6 +98,10 @@ class ProfileUpdate(BaseModel):
     name: str = Field(..., min_length=1, max_length=80)
 
 
+class SegmentUpdate(BaseModel):
+    text: str = Field(..., max_length=5000)
+
+
 class SessionUpdate(BaseModel):
     title: str | None = Field(None, max_length=120)
     speakers: dict[str, str] | None = None  # speaker id -> display name ("" = default)
@@ -210,6 +214,26 @@ def create_app(
                 session["speakers"].pop(speaker, None)
         store.save(session)
         return session
+
+    @app.patch("/api/sessions/{session_id}/segments/{segment_id}")
+    async def update_segment(session_id: str, segment_id: int, update: SegmentUpdate):
+        """Correct a segment's text by hand (also while recording)."""
+        try:
+            session = live.get(session_id) or store.get(session_id)
+        except KeyError:
+            raise HTTPException(404, "Session introuvable")
+        segment = next((s for s in session["segments"] if s["id"] == segment_id), None)
+        if segment is None:
+            raise HTTPException(404, "Segment introuvable")
+        text = " ".join(update.text.split())
+        if not text:
+            raise HTTPException(400, "Le texte ne peut pas être vide.")
+        if text != segment["text"]:
+            segment.setdefault("original", segment["text"])  # what the recognizer heard
+            segment["text"] = text
+            segment["edited"] = True
+            store.save(session)
+        return segment
 
     @app.delete("/api/sessions/{session_id}", status_code=204)
     def delete_session(session_id: str):

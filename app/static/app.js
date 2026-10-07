@@ -14,6 +14,7 @@ const els = {
   emptyState: $("emptyState"),
   segments: $("segments"),
   partial: $("partial"),
+  meter: $("meter"),
   meterFill: $("meterFill"),
   timer: $("timer"),
   recordBtn: $("recordBtn"),
@@ -307,13 +308,81 @@ function addSegment(segment) {
     time.append(lang);
   }
   const text = document.createElement("p");
-  text.style.margin = "0";
+  text.className = "seg-text";
   text.textContent = segment.text;
-  li.append(time, text);
+  if (segment.edited) markEdited(li, segment);
+
+  const more = document.createElement("button");
+  more.className = "icon-btn more-btn seg-more";
+  more.title = "Actions";
+  more.setAttribute("aria-label", "Actions sur ce passage");
+  more.setAttribute("aria-haspopup", "menu");
+  more.append(icon("more_vert"));
+  more.addEventListener("click", () => openMenu(more, [
+    { icon: "edit", label: "Modifier le texte", action: () => editSegment(li, segment) },
+  ]));
+
+  li.dataset.id = segment.id;
+  li.append(time, text, more);
   els.segments.append(li);
   state.segmentCount++;
   updateEmptyState();
   if (follow) scrollToBottom();
+}
+
+// The text was corrected by hand: say so, and keep what was recognized
+// available on hover.
+function markEdited(li, segment) {
+  li.classList.add("edited");
+  li.title = segment.original ? `Texte reconnu à l'origine : ${segment.original}` : "";
+}
+
+// Inline correction of a passage: Enter or leaving the field saves,
+// Escape cancels.
+function editSegment(li, segment) {
+  const textEl = li.querySelector(".seg-text");
+  const area = document.createElement("textarea");
+  area.className = "seg-edit";
+  area.value = segment.text;
+  area.setAttribute("aria-label", "Texte du passage");
+  const fit = () => {
+    area.style.height = "auto";
+    area.style.height = `${area.scrollHeight}px`;
+  };
+  area.addEventListener("input", fit);
+  let done = false;
+  const finish = async (save) => {
+    if (done) return;
+    done = true;
+    const value = area.value.trim();
+    if (save && value && value !== segment.text) {
+      const res = await fetch(`/api/sessions/${state.sessionId}/segments/${segment.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: value }),
+      });
+      if (res.ok) {
+        Object.assign(segment, await res.json());
+        textEl.textContent = segment.text;
+        markEdited(li, segment);
+      } else {
+        toast("Impossible d'enregistrer la correction.");
+      }
+    }
+    area.replaceWith(textEl);
+  };
+  area.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      finish(true);
+    }
+    if (e.key === "Escape") finish(false);
+  });
+  area.addEventListener("blur", () => finish(true));
+  textEl.replaceWith(area);
+  fit();
+  area.focus();
+  area.setSelectionRange(area.value.length, area.value.length);
 }
 
 function setPartial(text) {
@@ -409,6 +478,7 @@ async function openSession(id) {
   setTitle(session.title);
   els.timer.textContent = clock(session.segments.at(-1)?.end ?? 0);
   renderSession(session);
+  updateRecordButton();
   els.transcript.scrollTop = 0;
   els.sidebar.classList.remove("open");
   loadSessions();
@@ -444,6 +514,7 @@ function newMeeting() {
   setTitle("");
   els.timer.textContent = clock(0);
   clearTranscript();
+  updateRecordButton();
   els.sidebar.classList.remove("open");
   loadSessions();
 }
@@ -457,6 +528,10 @@ function updateRecordButton() {
   els.recordIcon.textContent = live ? "pause" : "mic";
   els.recordLabel.textContent = live ? "Pause" : state.paused ? "Reprendre" : "Démarrer";
   els.recordBtn.disabled = !state.engineReady && !state.recording;
+  // A finished meeting cannot be restarted: "Nouvelle réunion" starts another.
+  const finished = Boolean(state.sessionId) && !state.recording;
+  els.recordBtn.hidden = finished;
+  els.meter.hidden = finished;
   els.stopBtn.hidden = !state.recording;
   els.languageSelect.disabled = state.recording;
   els.newBtn.disabled = state.recording;
