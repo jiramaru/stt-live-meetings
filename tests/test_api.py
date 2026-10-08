@@ -294,3 +294,53 @@ def test_manual_speaker_survives_the_final_relabelling(client):
         while msg["type"] != "stopped":
             msg = ws.receive_json()
     assert [s["speaker"] for s in msg["session"]["segments"]] == ["S2", "S2"]
+
+
+def enrol_voice(client, name, freq):
+    return client.post(
+        "/api/profiles", content=pcm16(tone(10.0, freq)),
+        headers={"X-Profile-Name": quote(name), "X-Consent": "yes"},
+    ).json()
+
+
+def test_participants_limit_who_can_be_recognised(client):
+    awa, paul = enrol_voice(client, "Awa", 220), enrol_voice(client, "Paul", 660)
+    audio = np.concatenate([tone(1.5, 220), silence(1.2), tone(1.5, 660), silence(1.2)])
+
+    with client.websocket_connect("/ws/transcribe") as ws:
+        ws.send_json({"type": "start", "title": "Copil", "participants": [awa["id"]]})
+        started = ws.receive_json()["session"]
+        assert started["participants"] == [awa["id"]]
+        assert started["speakers"] == {awa["id"]: "Awa"}  # named before speaking
+        ws.send_bytes(pcm16(audio))
+        ws.send_json({"type": "stop"})
+        msg = ws.receive_json()
+        while msg["type"] != "stopped":
+            msg = ws.receive_json()
+    # Paul was not declared present: his voice is an unknown speaker.
+    assert [s["speaker"] for s in msg["session"]["segments"]] == [awa["id"], "S1"]
+
+
+def test_participant_joining_during_the_meeting(client):
+    awa, paul = enrol_voice(client, "Awa", 220), enrol_voice(client, "Paul", 660)
+    with client.websocket_connect("/ws/transcribe") as ws:
+        ws.send_json({"type": "start", "title": "Copil", "participants": [awa["id"]]})
+        session_id = ws.receive_json()["session"]["id"]
+        r = client.patch(f"/api/sessions/{session_id}",
+                         json={"participants": [awa["id"], paul["id"]]})
+        assert r.json()["speakers"][paul["id"]] == "Paul"
+        ws.send_bytes(pcm16(np.concatenate([tone(1.5, 660), silence(1.2)])))
+        ws.send_json({"type": "stop"})
+        msg = ws.receive_json()
+        while msg["type"] != "stopped":
+            msg = ws.receive_json()
+    assert msg["session"]["segments"][0]["speaker"] == paul["id"]
+
+
+def test_unknown_participant_is_refused(client):
+    with client.websocket_connect("/ws/transcribe") as ws:
+        ws.send_json({"type": "start", "participants": ["P00000000"]})
+        assert ws.receive_json()["type"] == "error"
+    session_id, _ = record(client, silence(0.5))
+    r = client.patch(f"/api/sessions/{session_id}", json={"participants": ["P00000000"]})
+    assert r.status_code == 400

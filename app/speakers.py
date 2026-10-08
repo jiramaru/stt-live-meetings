@@ -209,6 +209,11 @@ class SpeakerTracker:
         item.speaker = speaker
         item.pinned = True
 
+    def set_profiles(self, profiles: list[VoiceProfile]) -> None:
+        """Change which enrolled voices can be recognised (people present)."""
+        with self._lock:
+            self.profiles = list(profiles)
+
     def new_speaker_id(self) -> str:
         with self._lock:
             return self._new_id()

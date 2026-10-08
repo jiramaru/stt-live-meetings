@@ -77,6 +77,23 @@ class Engine:
             self.status, self.error = "error", str(exc)
 
 
+def participant_names(profiles: ProfileStore, ids: list[str]) -> dict[str, str]:
+    """Profile id -> name, in the given order. ValueError if one is unknown."""
+    names = {p["id"]: p["name"] for p in profiles.list()}
+    unknown = [i for i in ids if i not in names]
+    if unknown:
+        raise ValueError(f"Profil inconnu : {', '.join(unknown)}")
+    return {i: names[i] for i in dict.fromkeys(ids)}
+
+
+def voices_for(profiles: ProfileStore, participants: list[str]):
+    """Voice profiles to compare with: the people present, or everyone."""
+    voices = profiles.voices()
+    if participants:
+        voices = [v for v in voices if v.id in participants]
+    return voices
+
+
 def next_guest_id(session: dict) -> str:
     """A speaker id not used yet in this meeting ("S" + next number)."""
     used = [s["speaker"] for s in session["segments"] if s.get("speaker")] + list(session["speakers"])
@@ -113,6 +130,8 @@ class SegmentUpdate(BaseModel):
 
 class SessionUpdate(BaseModel):
     title: str | None = Field(None, max_length=120)
+    # Voice profiles of the people present; [] = compare with every profile.
+    participants: list[str] | None = None
     speakers: dict[str, str] | None = None  # speaker id -> display name ("" = default)
 
 
@@ -206,6 +225,18 @@ def create_app(
         except KeyError:
             raise HTTPException(404, "Session introuvable")
 
+    async def set_participants(session: dict, ids: list[str]) -> None:
+        try:
+            names = participant_names(profiles, ids)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        session["participants"] = list(names)
+        for pid, name in names.items():
+            session["speakers"].setdefault(pid, name)
+        tracker = trackers.get(session["id"])
+        if tracker:  # meeting in progress: recognise these people from now on
+            await asyncio.to_thread(tracker.set_profiles, voices_for(profiles, list(names)))
+
     @app.patch("/api/sessions/{session_id}")
     async def update_session(session_id: str, update: SessionUpdate):
         try:
@@ -214,6 +245,8 @@ def create_app(
             raise HTTPException(404, "Session introuvable")
         if update.title is not None:
             session["title"] = update.title.strip() or session["title"]
+        if update.participants is not None:
+            await set_participants(session, update.participants)
         for speaker, name in (update.speakers or {}).items():
             if not SPEAKER_ID_RE.match(speaker):
                 raise HTTPException(400, f"Intervenant inconnu : {speaker}")
@@ -338,7 +371,14 @@ async def run_session(
         return
     language = start.get("language")
     language = language if language in settings.language_list else None
+    try:
+        names = participant_names(profiles, start.get("participants") or [])
+    except ValueError as exc:
+        await ws.send_json({"type": "error", "message": str(exc)})
+        return
     session = store.create(start.get("title", ""), language)
+    session["participants"] = list(names)
+    session["speakers"].update(names)
     live[session["id"]] = session
     recording = None
     if settings.save_audio:
@@ -353,10 +393,10 @@ async def run_session(
             parts.embedder,
             threshold=settings.speaker_threshold,
             merge_threshold=settings.speaker_merge_threshold,
-            profiles=profiles.voices(),
+            profiles=voices_for(profiles, session["participants"]),
         )
         trackers[session["id"]] = tracker
-    names = {p.id: p.name for p in (tracker.profiles if tracker else [])}
+    profile_names = {p["id"]: p["name"] for p in profiles.list()}
     segmenter = StreamingSegmenter(
         parts.transcriber, parts.vad, settings, language=language, speakers=tracker
     )
@@ -409,8 +449,8 @@ async def run_session(
                 speaker = event.segment.speaker
                 # A recognised profile: the transcript shows the person's name
                 # (unless renamed in this meeting).
-                if speaker in names and speaker not in session["speakers"]:
-                    session["speakers"][speaker] = names[speaker]
+                if speaker in profile_names and speaker not in session["speakers"]:
+                    session["speakers"][speaker] = profile_names[speaker]
                 session["segments"].append(event.segment.to_dict())
                 store.save(session)
                 await ws.send_json({

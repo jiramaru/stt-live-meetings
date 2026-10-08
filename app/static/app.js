@@ -23,6 +23,8 @@ const els = {
   stopBtn: $("stopBtn"),
   exportGroup: $("exportGroup"),
   toast: $("toast"),
+  participantsBtn: $("participantsBtn"),
+  participantsLabel: $("participantsLabel"),
   tabMeetings: $("tabMeetings"),
   tabProfiles: $("tabProfiles"),
   meetingsPane: $("meetingsPane"),
@@ -49,6 +51,7 @@ const state = {
   segmentCount: 0,
   segmentList: [], // segments shown, in order
   speakers: {}, // speaker id -> custom name
+  participants: [], // voice profile ids of the people present ([] = everyone)
   lastSpeaker: undefined, // speaker of the last rendered segment
   ws: null,
   audio: null, // { ctx, stream, node, source }
@@ -95,7 +98,8 @@ function scrollToBottom() {
 // Small dropdown opened from a "more_vert" button. Items:
 // { icon, label, action, danger?, confirm? } where `confirm` is the label
 // shown after a first click; the action only runs on the second click.
-// { heading } adds a section title.
+// { heading } adds a section title, { note } a muted explanation, and
+// { label, checked, onToggle } a checkbox that leaves the menu open.
 let openedMenu = null;
 
 function closeMenu() {
@@ -118,11 +122,30 @@ function openMenu(anchor, items) {
   menu.className = "menu";
   menu.setAttribute("role", "menu");
   for (const item of items) {
-    if (item.heading) {
-      const heading = document.createElement("div");
-      heading.className = "menu-heading";
-      heading.textContent = item.heading;
-      menu.append(heading);
+    if (item.heading || item.note) {
+      const text = document.createElement("div");
+      text.className = item.heading ? "menu-heading" : "menu-note";
+      text.textContent = item.heading || item.note;
+      menu.append(text);
+      continue;
+    }
+    if (item.onToggle) {
+      const box = document.createElement("button");
+      box.className = "menu-item";
+      box.setAttribute("role", "menuitemcheckbox");
+      const render = (checked) => {
+        box.setAttribute("aria-checked", String(checked));
+        const label = document.createElement("span");
+        label.textContent = item.label;
+        box.replaceChildren(icon(checked ? "check_box" : "check_box_outline_blank"), label);
+      };
+      render(item.checked);
+      box.addEventListener("click", async () => {
+        const checked = box.getAttribute("aria-checked") !== "true";
+        render(checked);
+        if ((await item.onToggle(checked)) === false) render(!checked); // refused: undo
+      });
+      menu.append(box);
       continue;
     }
     const btn = document.createElement("button");
@@ -188,6 +211,7 @@ function clearTranscript() {
 }
 
 function renderSession(session) {
+  setParticipants(session.participants || []);
   const scroll = els.transcript.scrollTop;
   const partial = els.partial.textContent; // a live preview survives the redraw
   state.speakers = session.speakers || {};
@@ -363,7 +387,12 @@ async function chooseSpeaker(anchor, segment) {
     if (id === segment.speaker) continue;
     items.push({ icon: "person", label: speakerName(id), action: () => setSpeaker(segment, id) });
   }
-  for (const p of profiles) {
+  // People declared present but not heard yet come before the other voices.
+  const ordered = [
+    ...profiles.filter((p) => state.participants.includes(p.id)),
+    ...profiles.filter((p) => !state.participants.includes(p.id)),
+  ];
+  for (const p of ordered) {
     if (inMeeting.includes(p.id)) continue;
     items.push({ icon: "account_circle", label: p.name, action: () => setSpeaker(segment, p.id) });
   }
@@ -564,6 +593,7 @@ function newMeeting() {
   if (state.recording) return;
   state.sessionId = null;
   state.speakers = {};
+  setParticipants([]);
   setTitle("");
   els.timer.textContent = clock(0);
   clearTranscript();
@@ -584,6 +614,7 @@ function updateRecordButton() {
   // A finished meeting cannot be restarted: "Nouvelle réunion" starts another.
   const finished = Boolean(state.sessionId) && !state.recording;
   els.recordBtn.hidden = finished;
+  els.participantsBtn.hidden = finished; // chosen before or during a meeting
   els.meter.hidden = finished;
   els.stopBtn.hidden = !state.recording;
   els.languageSelect.disabled = state.recording;
@@ -642,6 +673,7 @@ function openSocket() {
         type: "start",
         title: state.title,
         language: els.languageSelect.value,
+        participants: state.participants,
       }));
     };
     ws.onmessage = ({ data }) => {
@@ -650,6 +682,7 @@ function openSocket() {
         case "started":
           state.sessionId = msg.session.id;
           state.speakers = msg.session.speakers;
+          setParticipants(msg.session.participants);
           setTitle(msg.session.title);
           resolve(ws);
           break;
@@ -767,6 +800,58 @@ function stopRecording() {
     setPartial("Finalisation…");
     ws.send(JSON.stringify({ type: "stop" }));
   }
+}
+
+// ---------------------------------------------------------------- participants
+
+function setParticipants(ids) {
+  state.participants = ids;
+  els.participantsLabel.textContent = ids.length ? `Participants (${ids.length})` : "Participants";
+}
+
+// Who is in the meeting, among the enrolled voices. Before the start it is
+// sent with "start"; during the meeting the server applies it right away.
+async function openParticipants() {
+  const profiles = await (await fetch("/api/profiles")).json();
+  const items = [{ heading: "Personnes présentes" }];
+  if (profiles.length === 0) {
+    items.push({ note: "Aucune voix inscrite. Ajoutez-en depuis l'onglet Profils." });
+  }
+  for (const p of profiles) {
+    items.push({
+      label: p.name,
+      checked: state.participants.includes(p.id),
+      onToggle: (checked) => toggleParticipant(p.id, checked),
+    });
+  }
+  if (profiles.length) {
+    items.push({ note: "Si personne n'est coché, toutes les voix inscrites sont utilisées." });
+  }
+  openMenu(els.participantsBtn, items);
+}
+
+async function toggleParticipant(id, checked) {
+  const ids = checked
+    ? [...state.participants, id]
+    : state.participants.filter((p) => p !== id);
+  if (state.recording && state.sessionId) {
+    const res = await fetch(`/api/sessions/${state.sessionId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ participants: ids }),
+    });
+    if (!res.ok) {
+      toast("Impossible de mettre à jour les participants.");
+      return false;
+    }
+    const session = await res.json();
+    state.speakers = session.speakers;
+    setParticipants(session.participants);
+    refreshSpeakerTags();
+    return true;
+  }
+  setParticipants(ids);
+  return true;
 }
 
 // ---------------------------------------------------------------- title
@@ -1024,6 +1109,7 @@ function resetEnrolForm() {
 
 // ---------------------------------------------------------------- wiring
 
+els.participantsBtn.addEventListener("click", openParticipants);
 els.tabMeetings.addEventListener("click", () => showTab("meetings"));
 els.tabProfiles.addEventListener("click", () => showTab("profiles"));
 els.menuBtn2.addEventListener("click", () => els.sidebar.classList.toggle("open"));

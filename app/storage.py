@@ -32,6 +32,7 @@ class SessionStore:
             "started_at": datetime.now(timezone.utc).isoformat(),
             "ended_at": None,
             "speakers": {},  # speaker id -> name given by the user
+            "participants": [],  # voice profile ids of the people present ([] = all)
             "segments": [],
         }
         self.save(session)
@@ -49,6 +50,7 @@ class SessionStore:
             raise KeyError(session_id)
         session = json.loads(path.read_text(encoding="utf-8"))
         session.setdefault("speakers", {})  # sessions recorded before speaker labels
+        session.setdefault("participants", [])
         return session
 
     def list(self) -> list[dict]:

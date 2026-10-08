@@ -408,6 +408,8 @@ button:disabled { cursor: not-allowed; opacity: .5; }
   letter-spacing: .03em;
   text-transform: uppercase;
 }
+.menu-note { padding: 6px 12px 8px; color: var(--muted); font-size: 12px; max-width: 260px; }
+.participants-btn { white-space: nowrap; }
 .menu { max-height: min(420px, calc(100vh - 16px)); overflow-y: auto; }
 .menu-item {
   display: flex;
@@ -450,7 +452,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
   .toolbar, .controls, .transcript { padding-left: 16px; padding-right: 16px; }
   .controls { flex-wrap: wrap; }
   .export { margin-left: 0; width: 100%; }
-  .engine-label, .export-label { display: none; }
+  .engine-label, .export-label, #participantsLabel { display: none; }
   .segment { grid-template-columns: 1fr 28px; gap: 0 8px; }
   .segment time { grid-column: 1 / -1; }
   .turn { padding-left: 0; }

@@ -123,3 +123,12 @@ def test_short_segment_reassigned_by_hand_is_not_refilled():
     tracker.assign(1, tone(0.4, 660))  # too short: inherits S1
     tracker.reassign(1, "S2")
     assert tracker.refine() == {0: "S1", 1: "S2"}
+
+
+def test_only_present_participants_are_recognised():
+    awa, paul = profile("Paaaaaaaa", 220), profile("Pbbbbbbbb", 660)
+    tracker = make()
+    tracker.set_profiles([awa])  # Paul is not in this meeting
+    assert tracker.assign(0, tone(2.0, 660)) == "S1"  # unknown voice, not Paul
+    tracker.set_profiles([awa, paul])  # Paul joins late
+    assert tracker.assign(1, tone(2.0, 660)) == "Pbbbbbbbb"
