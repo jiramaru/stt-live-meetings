@@ -15,13 +15,13 @@ const els = {
   segments: $("segments"),
   partial: $("partial"),
   meter: $("meter"),
-  meterFill: $("meterFill"),
+  waveCanvas: $("waveCanvas"),
+  dock: $("dock"),
   timer: $("timer"),
   recordBtn: $("recordBtn"),
   recordIcon: $("recordIcon"),
   recordLabel: $("recordLabel"),
   stopBtn: $("stopBtn"),
-  exportGroup: $("exportGroup"),
   toast: $("toast"),
   participantsBtn: $("participantsBtn"),
   participantsLabel: $("participantsLabel"),
@@ -63,10 +63,21 @@ const state = {
 
 // ---------------------------------------------------------------- helpers
 
+// "4:07", or "1:02:05" past an hour
 function clock(seconds) {
-  const s = Math.floor(seconds);
+  const s = Math.max(0, Math.floor(seconds));
   const pad = (n) => String(n).padStart(2, "0");
-  return `${pad(Math.floor(s / 3600))}:${pad(Math.floor((s % 3600) / 60))}:${pad(s % 60)}`;
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return h ? `${h}:${pad(m)}:${pad(s % 60)}` : `${m}:${pad(s % 60)}`;
+}
+
+// "45 s", "12 min", "1 h 05"
+function duration(seconds) {
+  const s = Math.round(seconds);
+  if (s < 60) return `${s} s`;
+  if (s < 3600) return `${Math.round(s / 60)} min`;
+  return `${Math.floor(s / 3600)} h ${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}`;
 }
 
 let toastTimer;
@@ -207,6 +218,7 @@ function clearTranscript() {
   state.segmentCount = 0;
   state.segmentList = [];
   state.lastSpeaker = undefined;
+  speakerColors.clear();
   updateEmptyState();
 }
 
@@ -230,12 +242,13 @@ function speakerName(id) {
   return state.speakers[id] || `Intervenant ${id.slice(1)}`;
 }
 
-// Unknown voices "S3" take color 3; voice profiles "P3fa9c2d1" a color
-// derived from their id, so a person keeps the same color in every meeting.
+// Colors are handed out in order of appearance: in one meeting (or one
+// list), two people never share a color until there are more than eight.
+const speakerColors = new Map();
+
 function speakerColor(id) {
-  let n = parseInt(id.slice(1), 10) - 1;
-  if (id.startsWith("P")) n = [...id].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7);
-  return `var(--spk-${(n % SPEAKER_COLORS) + 1})`;
+  if (!speakerColors.has(id)) speakerColors.set(id, speakerColors.size % SPEAKER_COLORS);
+  return `var(--spk-${speakerColors.get(id) + 1})`;
 }
 
 // A speaker heading: colored name label plus a "more_vert" action menu.
@@ -320,11 +333,9 @@ function startRename(tag) {
 
 function updateEmptyState() {
   els.emptyState.hidden = state.segmentCount > 0 || state.recording;
-  const canExport = Boolean(state.sessionId) && state.segmentCount > 0;
-  for (const btn of els.exportGroup.querySelectorAll("button")) btn.disabled = !canExport;
 }
 
-function addSegment(segment) {
+function addSegment(segment, { arrived = false } = {}) {
   const follow = isNearBottom();
   if (segment.speaker && segment.speaker !== state.lastSpeaker) {
     const turn = document.createElement("li");
@@ -365,6 +376,7 @@ function addSegment(segment) {
   ]));
 
   li.dataset.id = segment.id;
+  if (arrived) li.classList.add("arrived"); // a newly heard passage settles in
   li.append(time, text, more);
   els.segments.append(li);
   state.segmentCount++;
@@ -484,7 +496,8 @@ async function pollHealth() {
     if (health.status === "ready") {
       state.engineReady = true;
       els.engineStatus.classList.add("ready");
-      label.textContent = `Modèle ${health.model}`;
+      const model = health.model.split("/").pop().replace("faster-whisper-", "");
+      label.textContent = `Prêt, modèle ${model}`;
       els.engineStatus.title = `Moteur prêt (${health.model}, ${health.device})`;
     } else if (health.status === "error") {
       els.engineStatus.classList.add("error");
@@ -528,7 +541,7 @@ async function loadSessions() {
     const date = new Date(s.started_at).toLocaleString("fr-FR", {
       day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit",
     });
-    sub.textContent = `${date} · ${clock(s.duration)}`;
+    sub.textContent = `${date}, ${duration(s.duration)}`;
     meta.append(title, sub);
 
     const del = document.createElement("button");
@@ -557,6 +570,7 @@ async function openSession(id) {
   if (!res.ok) return toast("Réunion introuvable.");
   const session = await res.json();
   state.sessionId = id;
+  history.replaceState(null, "", `#${id}`); // the address links to this meeting
   setTitle(session.title);
   els.timer.textContent = clock(session.segments.at(-1)?.end ?? 0);
   renderSession(session);
@@ -592,6 +606,7 @@ async function deleteSession(id, button) {
 function newMeeting() {
   if (state.recording) return;
   state.sessionId = null;
+  history.replaceState(null, "", location.pathname);
   state.speakers = {};
   setParticipants([]);
   setTitle("");
@@ -615,10 +630,11 @@ function updateRecordButton() {
   const finished = Boolean(state.sessionId) && !state.recording;
   els.recordBtn.hidden = finished;
   els.participantsBtn.hidden = finished; // chosen before or during a meeting
-  els.meter.hidden = finished;
+  els.dock.hidden = finished; // nothing to record: the transcript gets the room
   els.stopBtn.hidden = !state.recording;
   els.languageSelect.disabled = state.recording;
   els.newBtn.disabled = state.recording;
+  wave.draw(); // its color follows the recording state
 }
 
 // Opens the microphone and calls onChunk({ pcm, level }) about every 100 ms
@@ -650,7 +666,7 @@ async function openMic(onChunk) {
 
 async function startAudio() {
   const release = await openMic(({ pcm, level }) => {
-    els.meterFill.style.width = `${Math.min(100, level * 400)}%`;
+    wave.push(level);
     if (state.ws?.readyState === WebSocket.OPEN) state.ws.send(pcm);
   });
   state.audio = { release };
@@ -660,8 +676,60 @@ function stopAudio() {
   if (!state.audio) return;
   state.audio.release();
   state.audio = null;
-  els.meterFill.style.width = "0";
+  wave.push(0);
 }
+
+// ---------------------------------------------------------------- waveform
+
+// The microphone level of the last few seconds, drawn as bars that scroll
+// left: the dock shows the room being heard. Bars ease toward their target
+// so the motion stays smooth between 100 ms audio chunks.
+const wave = (() => {
+  const BARS = 32;
+  const levels = new Array(BARS).fill(0);
+  const shown = new Array(BARS).fill(0);
+  const canvas = els.waveCanvas;
+  const ctx = canvas.getContext("2d");
+  let frame = null;
+
+  function color() {
+    const live = state.recording && !state.paused;
+    return getComputedStyle(document.documentElement).getPropertyValue(live ? "--live" : "--line-strong");
+  }
+
+  function draw() {
+    const { width, height } = canvas;
+    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = color();
+    const step = width / BARS;
+    let moving = false;
+    for (let i = 0; i < BARS; i++) {
+      shown[i] += (levels[i] - shown[i]) * 0.35;
+      if (Math.abs(levels[i] - shown[i]) > 0.002) moving = true;
+      const h = Math.max(3, Math.min(1, shown[i] * 5) * height);
+      const w = step * 0.5;
+      const x = i * step + (step - w) / 2;
+      const r = w / 2;
+      ctx.beginPath();
+      ctx.roundRect(x, (height - h) / 2, w, h, r);
+      ctx.fill();
+    }
+    frame = moving ? requestAnimationFrame(draw) : null;
+  }
+
+  function push(level) {
+    levels.shift();
+    levels.push(level);
+    if (!frame) frame = requestAnimationFrame(draw);
+  }
+
+  // Sharp on high-density screens
+  const ratio = window.devicePixelRatio || 1;
+  canvas.width = canvas.clientWidth * ratio || canvas.width;
+  canvas.height = canvas.clientHeight * ratio || canvas.height;
+  draw();
+  return { push, draw };
+})();
 
 function openSocket() {
   return new Promise((resolve, reject) => {
@@ -681,6 +749,7 @@ function openSocket() {
       switch (msg.type) {
         case "started":
           state.sessionId = msg.session.id;
+          history.replaceState(null, "", `#${msg.session.id}`);
           state.speakers = msg.session.speakers;
           setParticipants(msg.session.participants);
           setTitle(msg.session.title);
@@ -691,7 +760,7 @@ function openSocket() {
           break;
         case "final":
           if (msg.speakers) state.speakers = msg.speakers;
-          addSegment(msg.segment);
+          addSegment(msg.segment, { arrived: true });
           break;
         case "paused":
           // Speaker labels were refined with hindsight: redraw with them.
@@ -908,6 +977,19 @@ function startTitleEdit() {
 
 function openTitleMenu() {
   const items = [{ icon: "edit", label: "Renommer la réunion", action: startTitleEdit }];
+  if (state.sessionId && state.segmentCount > 0) {
+    const id = state.sessionId;
+    const download = (format) => () => {
+      location.href = `/api/sessions/${id}/export?format=${format}`;
+    };
+    items.push(
+      { heading: "Exporter" },
+      { icon: "description", label: "Document Word", action: download("docx") },
+      { icon: "article", label: "Texte brut", action: download("txt") },
+      { icon: "subtitles", label: "Sous-titres SRT", action: download("srt") },
+      { icon: "notes", label: "Markdown", action: download("md") },
+    );
+  }
   if (state.sessionId && state.hasAudio && !state.recording) {
     const id = state.sessionId;
     items.push({
@@ -962,9 +1044,9 @@ async function loadProfiles() {
   els.profileList.replaceChildren(...profiles.map(profileRow));
 }
 
-function profileRow(p) {
+function profileRow(p, index) {
   const li = document.createElement("li");
-  li.style.setProperty("--spk", speakerColor(p.id));
+  li.style.setProperty("--spk", `var(--spk-${(index % SPEAKER_COLORS) + 1})`);
   const person = icon("account_circle");
   person.classList.add("person");
   const meta = document.createElement("div");
@@ -974,7 +1056,7 @@ function profileRow(p) {
   name.textContent = p.name;
   const sub = document.createElement("div");
   sub.className = "sub";
-  sub.textContent = `Inscrite le ${new Date(p.created_at).toLocaleDateString("fr-FR")} · ${Math.round(p.seconds)} s de parole`;
+  sub.textContent = `Inscrite le ${new Date(p.created_at).toLocaleDateString("fr-FR")}, ${Math.round(p.seconds)} s de parole`;
   meta.append(name, sub);
 
   const more = document.createElement("button");
@@ -1124,11 +1206,6 @@ els.recordBtn.addEventListener("click", () => {
 els.stopBtn.addEventListener("click", stopRecording);
 els.newBtn.addEventListener("click", newMeeting);
 els.menuBtn.addEventListener("click", () => els.sidebar.classList.toggle("open"));
-els.exportGroup.addEventListener("click", (e) => {
-  const btn = e.target.closest("button[data-format]");
-  if (!btn || !state.sessionId) return;
-  location.href = `/api/sessions/${state.sessionId}/export?format=${btn.dataset.format}`;
-});
 window.addEventListener("beforeunload", (e) => {
   if (state.recording) e.preventDefault();
 });
@@ -1136,5 +1213,7 @@ window.addEventListener("beforeunload", (e) => {
 setTitle("");
 updateRecordButton();
 updateEmptyState();
+if (/^#[0-9a-f]{32}$/.test(location.hash)) openSession(location.hash.slice(1));
+if (location.hash === "#profils") showTab("profiles");
 pollHealth();
 loadSessions();
