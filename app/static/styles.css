@@ -348,6 +348,40 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   background: var(--raised);
   outline: none;
 }
+/* Rename field with the enrolled voices listed below it */
+.rename-box { position: relative; display: inline-block; }
+.suggestions {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 260px;
+  max-height: 260px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-m);
+  background: var(--overlay);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, .5);
+  animation: menu-in .14s var(--ease);
+  transform-origin: top left;
+}
+.suggestions li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: var(--radius-s);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+.suggestions li .material-symbols-outlined { color: var(--muted); font-size: 18px; }
+.suggestions li span:nth-child(2) { flex: 1; }
+.suggestions li:hover, .suggestions li[aria-selected="true"] { background: var(--accent-soft); }
+.hint-tag { color: var(--faint); font-size: 11px; }
 .speaker-input::placeholder { color: var(--faint); font-weight: 500; }
 .more-btn { width: 26px; height: 26px; }
 .more-btn .material-symbols-outlined { font-size: 18px; }

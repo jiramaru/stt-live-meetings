@@ -279,18 +279,10 @@ function speakerTag(id) {
   more.setAttribute("aria-haspopup", "menu");
   more.append(icon("more_vert"));
   more.addEventListener("click", () => {
-    const items = [
-      { icon: "edit", label: "Renommer l'intervenant", action: () => startRename(tag) },
+    openMenu(more, [
+      { icon: "edit", label: "Renommer ou choisir un profil", action: () => startRename(tag) },
       { icon: "switch_account", label: "Attribuer ses passages à…", action: () => chooseMergeTarget(more, id) },
-    ];
-    if (state.speakers[id]) {
-      items.push({
-        icon: "undo",
-        label: "Rétablir le nom par défaut",
-        action: () => saveSpeakerName(id, ""),
-      });
-    }
-    openMenu(more, items);
+    ]);
   });
 
   tag.append(chip, more);
@@ -314,34 +306,99 @@ async function saveSpeakerName(id, name) {
   refreshSpeakerTags();
 }
 
-// Inline rename: the label becomes a text field; Enter or leaving it saves,
-// Escape cancels. The new name applies to every turn of that speaker.
-function startRename(tag) {
+// Rename a speaker. The field lists the enrolled voices, filtered as you
+// type: picking one gives that person all of this speaker's passages;
+// Enter on free text names a guest; an empty field restores the default.
+async function startRename(tag) {
   const id = tag.dataset.speaker;
+  const box = document.createElement("div");
+  box.className = "rename-box";
+  box.style.setProperty("--spk", tag.style.getPropertyValue("--spk"));
+
   const input = document.createElement("input");
   input.className = "speaker-input";
   input.value = state.speakers[id] || "";
-  input.placeholder = speakerName(id);
+  input.placeholder = "Nom, ou choisissez un profil";
   input.maxLength = 80;
-  input.setAttribute("aria-label", "Nom de l'intervenant");
-  input.style.setProperty("--spk", tag.style.getPropertyValue("--spk"));
+  input.setAttribute("role", "combobox");
+  input.setAttribute("aria-label", "Nom de l'intervenant ou profil inscrit");
+  input.setAttribute("aria-expanded", "true");
+
+  const list = document.createElement("ul");
+  list.className = "suggestions";
+  list.setAttribute("role", "listbox");
+  box.append(input, list);
+  tag.replaceWith(box);
+  input.focus();
+  input.select();
+
+  let profiles = [];
+  try {
+    profiles = (await (await fetch("/api/profiles")).json()).filter((p) => p.id !== id);
+  } catch {
+    // free text still works
+  }
+  // People declared present first
+  profiles.sort((a, b) =>
+    Number(state.participants.includes(b.id)) - Number(state.participants.includes(a.id)));
+
+  let active = -1;
+  let shown = [];
+  const render = () => {
+    const q = input.value.trim().toLowerCase();
+    shown = profiles.filter((p) => !q || p.name.toLowerCase().includes(q));
+    active = Math.min(active, shown.length - 1);
+    list.replaceChildren(...shown.map((p, i) => {
+      const li = document.createElement("li");
+      li.setAttribute("role", "option");
+      li.setAttribute("aria-selected", String(i === active));
+      const name = document.createElement("span");
+      name.textContent = p.name;
+      const hint = document.createElement("span");
+      hint.className = "hint-tag";
+      hint.textContent = state.participants.includes(p.id) ? "présent" : "profil";
+      li.append(icon("account_circle"), name, hint);
+      // mousedown, not click: runs before the field loses focus
+      li.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        finish({ profile: p.id });
+      });
+      return li;
+    }));
+    list.hidden = shown.length === 0;
+  };
+
   let done = false;
-  const finish = (save) => {
+  const finish = (choice) => {
     if (done) return;
     done = true;
-    if (save && input.value.trim() !== (state.speakers[id] || "")) {
-      saveSpeakerName(id, input.value);
+    // Put the label back first; the refresh below only updates labels.
+    box.replaceWith(speakerTag(id));
+    if (choice?.profile) {
+      mergeSpeaker(id, choice.profile);
+    } else if (choice?.name !== undefined && choice.name.trim() !== (state.speakers[id] || "")) {
+      saveSpeakerName(id, choice.name);
     } else {
       refreshSpeakerTags();
     }
   };
+
+  input.addEventListener("input", () => { active = -1; render(); });
   input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") finish(true);
-    if (e.key === "Escape") finish(false);
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      if (!shown.length) return;
+      active = (active + (e.key === "ArrowDown" ? 1 : -1) + shown.length) % shown.length;
+      render();
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      finish(active >= 0 ? { profile: shown[active].id } : { name: input.value });
+    } else if (e.key === "Escape") {
+      finish(null);
+    }
   });
-  input.addEventListener("blur", () => finish(true));
-  tag.replaceWith(input);
-  input.focus();
+  input.addEventListener("blur", () => finish({ name: input.value }));
+  render();
 }
 
 function updateEmptyState() {
