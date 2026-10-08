@@ -7,7 +7,7 @@
   <title>Transcription de réunion</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=Newsreader:opsz,wght@6..72,400;6..72,500&display=swap">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500&display=swap">
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,300..500,0..1,0&display=block">
   <link rel="stylesheet" href="/static/styles.css">
 </head>
@@ -49,6 +49,9 @@
           </button>
         </div>
         <div class="topbar-actions">
+          <button class="chip-btn" id="exportBtn" aria-haspopup="menu" hidden>
+            <span class="material-symbols-outlined">download</span><span>Exporter</span>
+          </button>
           <button class="chip-btn" id="participantsBtn" aria-haspopup="menu"
                   title="Personnes présentes : leur voix est reconnue en priorité">
             <span class="material-symbols-outlined">group</span><span id="participantsLabel">Participants</span>
@@ -66,15 +69,22 @@
 
       <section class="transcript" id="transcript" aria-live="polite">
         <div class="empty" id="emptyState">
-          <p class="empty-title">Prêt à écouter.</p>
-          <p class="empty-text">Lancez l'enregistrement : le texte s'écrit ici pendant que la réunion se déroule,
-            avec le nom de chaque intervenant.</p>
+          <canvas class="rain" id="rainCanvas" aria-hidden="true"></canvas>
+          <div class="empty-body">
+            <p class="empty-title">Prêt à écouter</p>
+            <p class="empty-text">Le texte de la réunion s'écrira ici en direct, avec le nom de chaque intervenant.</p>
+            <button class="start-cta" id="startCta">
+              <span class="material-symbols-outlined">mic</span>Démarrer l'enregistrement
+            </button>
+            <p class="empty-hint">Avant de commencer : cochez les personnes présentes dans Participants.</p>
+          </div>
         </div>
         <ol class="segments" id="segments"></ol>
         <p class="partial" id="partial"></p>
       </section>
 
       <div class="dock" id="dock">
+        <span class="status" id="statusLabel" role="status">Prêt</span>
         <div class="wave" id="meter" aria-hidden="true"><canvas id="waveCanvas" width="320" height="64"></canvas></div>
         <span class="timer" id="timer">0:00</span>
         <button class="record-btn" id="recordBtn">

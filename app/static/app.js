@@ -17,6 +17,10 @@ const els = {
   meter: $("meter"),
   waveCanvas: $("waveCanvas"),
   dock: $("dock"),
+  startCta: $("startCta"),
+  rainCanvas: $("rainCanvas"),
+  statusLabel: $("statusLabel"),
+  exportBtn: $("exportBtn"),
   timer: $("timer"),
   recordBtn: $("recordBtn"),
   recordIcon: $("recordIcon"),
@@ -70,6 +74,12 @@ function clock(seconds) {
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
   return h ? `${h}:${pad(m)}:${pad(s % 60)}` : `${m}:${pad(s % 60)}`;
+}
+
+function dayGroup(iso) {
+  const start = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const days = Math.round((start(new Date()) - start(new Date(iso))) / 86400000);
+  return days === 0 ? "Aujourd'hui" : days === 1 ? "Hier" : "Plus ancien";
 }
 
 // "45 s", "12 min", "1 h 05"
@@ -333,6 +343,16 @@ function startRename(tag) {
 
 function updateEmptyState() {
   els.emptyState.hidden = state.segmentCount > 0 || state.recording;
+  const finished = Boolean(state.sessionId) && !state.recording;
+  els.emptyState.querySelector(".empty-title").textContent =
+    finished ? "Aucun texte dans cette réunion" : "Prêt à écouter";
+  els.emptyState.querySelector(".empty-text").textContent = finished
+    ? "Rien n'a été transcrit pendant cet enregistrement."
+    : "Le texte de la réunion s'écrira ici en direct, avec le nom de chaque intervenant.";
+  els.startCta.hidden = finished;
+  els.emptyState.querySelector(".empty-hint").hidden = finished;
+  els.exportBtn.hidden = !(finished && state.segmentCount > 0);
+  rain.toggle(!els.emptyState.hidden && !els.meetingView.hidden);
 }
 
 function addSegment(segment, { arrived = false } = {}) {
@@ -526,7 +546,16 @@ async function loadSessions() {
     els.sessionList.append(li);
     return;
   }
+  let group = null;
   for (const s of sessions) {
+    const day = dayGroup(s.started_at);
+    if (day !== group) {
+      group = day;
+      const heading = document.createElement("li");
+      heading.className = "session-group";
+      heading.textContent = day;
+      els.sessionList.append(heading);
+    }
     const li = document.createElement("li");
     li.className = "session-item" + (s.id === state.sessionId ? " active" : "");
     li.tabIndex = 0;
@@ -538,10 +567,11 @@ async function loadSessions() {
     title.textContent = s.title;
     const sub = document.createElement("div");
     sub.className = "session-sub";
-    const date = new Date(s.started_at).toLocaleString("fr-FR", {
-      day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit",
-    });
-    sub.textContent = `${date}, ${duration(s.duration)}`;
+    const date = new Date(s.started_at);
+    const when = dayGroup(s.started_at) === "Plus ancien"
+      ? date.toLocaleString("fr-FR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })
+      : date.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+    sub.textContent = `${when}, ${duration(s.duration)}`;
     meta.append(title, sub);
 
     const del = document.createElement("button");
@@ -626,11 +656,16 @@ function updateRecordButton() {
   els.recordIcon.textContent = live ? "pause" : "mic";
   els.recordLabel.textContent = live ? "Pause" : state.paused ? "Reprendre" : "Démarrer";
   els.recordBtn.disabled = !state.engineReady && !state.recording;
+  els.startCta.disabled = !state.engineReady;
+  els.statusLabel.textContent = live ? "En écoute" : state.paused ? "En pause" : "Prêt";
+  els.statusLabel.classList.toggle("live", live);
   // A finished meeting cannot be restarted: "Nouvelle réunion" starts another.
   const finished = Boolean(state.sessionId) && !state.recording;
   els.recordBtn.hidden = finished;
   els.participantsBtn.hidden = finished; // chosen before or during a meeting
-  els.dock.hidden = finished; // nothing to record: the transcript gets the room
+  // The dock exists only during a meeting: before, the central button starts
+  // it; after, there is nothing left to control.
+  els.dock.hidden = !state.recording;
   els.stopBtn.hidden = !state.recording;
   els.languageSelect.disabled = state.recording;
   els.newBtn.disabled = state.recording;
@@ -678,6 +713,59 @@ function stopAudio() {
   state.audio = null;
   wave.push(0);
 }
+
+// ---------------------------------------------------------------- matrix rain
+
+// Columns of half-width katakana and digits falling behind the empty state.
+// Runs only while that screen is visible, at a calm frame rate, and not at
+// all when the system asks for reduced motion.
+const rain = (() => {
+  const canvas = els.rainCanvas;
+  const ctx = canvas.getContext("2d");
+  const glyphs = "ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ0123456789";
+  const size = 16;
+  const still = matchMedia("(prefers-reduced-motion: reduce)");
+  let drops = [];
+  let timer = null;
+
+  function resize() {
+    const ratio = window.devicePixelRatio || 1;
+    canvas.width = canvas.clientWidth * ratio;
+    canvas.height = canvas.clientHeight * ratio;
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    const columns = Math.ceil(canvas.clientWidth / size);
+    drops = Array.from({ length: columns }, () => Math.random() * -50);
+    ctx.fillStyle = "#050806";
+    ctx.fillRect(0, 0, canvas.clientWidth, canvas.clientHeight);
+  }
+
+  function frame() {
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    ctx.fillStyle = "rgba(5, 8, 6, .12)"; // fading trails
+    ctx.fillRect(0, 0, w, h);
+    ctx.font = `${size}px "IBM Plex Mono", monospace`;
+    for (let i = 0; i < drops.length; i++) {
+      const y = drops[i] * size;
+      ctx.fillStyle = Math.random() < .04 ? "#d3f5db" : "#00ff41";
+      ctx.fillText(glyphs[(Math.random() * glyphs.length) | 0], i * size, y);
+      drops[i] = y > h && Math.random() > .975 ? 0 : drops[i] + 1;
+    }
+  }
+
+  function toggle(on) {
+    if (on && !timer && !still.matches) {
+      resize();
+      timer = setInterval(frame, 60);
+    } else if (!on && timer) {
+      clearInterval(timer);
+      timer = null;
+    }
+  }
+
+  window.addEventListener("resize", () => { if (timer) resize(); });
+  return { toggle };
+})();
 
 // ---------------------------------------------------------------- waveform
 
@@ -975,21 +1063,22 @@ function startTitleEdit() {
   input.addEventListener("blur", onBlur);
 }
 
+function openExportMenu() {
+  const id = state.sessionId;
+  const download = (format) => () => {
+    location.href = `/api/sessions/${id}/export?format=${format}`;
+  };
+  openMenu(els.exportBtn, [
+    { heading: "Télécharger la transcription" },
+    { icon: "description", label: "Document Word (.docx)", action: download("docx") },
+    { icon: "article", label: "Texte (.txt)", action: download("txt") },
+    { icon: "subtitles", label: "Sous-titres (.srt)", action: download("srt") },
+    { icon: "notes", label: "Markdown (.md)", action: download("md") },
+  ]);
+}
+
 function openTitleMenu() {
   const items = [{ icon: "edit", label: "Renommer la réunion", action: startTitleEdit }];
-  if (state.sessionId && state.segmentCount > 0) {
-    const id = state.sessionId;
-    const download = (format) => () => {
-      location.href = `/api/sessions/${id}/export?format=${format}`;
-    };
-    items.push(
-      { heading: "Exporter" },
-      { icon: "description", label: "Document Word", action: download("docx") },
-      { icon: "article", label: "Texte brut", action: download("txt") },
-      { icon: "subtitles", label: "Sous-titres SRT", action: download("srt") },
-      { icon: "notes", label: "Markdown", action: download("md") },
-    );
-  }
   if (state.sessionId && state.hasAudio && !state.recording) {
     const id = state.sessionId;
     items.push({
@@ -1029,6 +1118,7 @@ function showTab(name) {
   els.meetingsPane.hidden = profiles;
   els.profilesView.hidden = !profiles;
   els.sidebar.classList.remove("open");
+  updateEmptyState(); // starts or stops the rain behind the empty state
   if (profiles) loadProfiles();
 }
 
@@ -1192,6 +1282,8 @@ function resetEnrolForm() {
 // ---------------------------------------------------------------- wiring
 
 els.participantsBtn.addEventListener("click", openParticipants);
+els.exportBtn.addEventListener("click", openExportMenu);
+els.startCta.addEventListener("click", () => { if (!state.recording) startRecording(); });
 els.tabMeetings.addEventListener("click", () => showTab("meetings"));
 els.tabProfiles.addEventListener("click", () => showTab("profiles"));
 els.menuBtn2.addEventListener("click", () => els.sidebar.classList.toggle("open"));

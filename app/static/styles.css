@@ -1,37 +1,41 @@
-/* Dark, quiet interface around a transcript that reads like written minutes.
-   One accent (periwinkle) for actions and focus; coral only while recording. */
+/* Matrix, kept clean: black with a green cast, pale phosphor text, and the
+   signature #00ff41 kept for primary actions and live listening. Monospace
+   for the interface, a readable sans for the transcript itself. */
 
 :root {
-  --bg: #0f1218;
-  --rail: #0c0f14;
-  --raised: #151922;
-  --overlay: #1b202a;
-  --line: #242a35;
-  --line-strong: #313846;
-  --text: #e6e8ec;
-  --reading: #d7dae0;
-  --muted: #8b93a1;
-  --faint: #5d6573;
-  --accent: #9db4ff;
-  --accent-ink: #0f1218;
-  --live: #f2735e;
-  --ok: #6cc79a;
+  --bg: #050806;
+  --rail: #030504;
+  --raised: #0a110c;
+  --overlay: #0d1710;
+  --line: #13261a;
+  --line-strong: #1d3a26;
+  --text: #d3f5db;
+  --reading: #c4ead0;
+  --muted: #6fa47c;
+  --faint: #3f6a4b;
+  --accent: #00ff41;
+  --accent-soft: rgba(0, 255, 65, .12);
+  --accent-ink: #021405;
+  --live: #00ff41;
+  --danger: #ff5c5c;
+  --ok: #00ff41;
 
-  /* Speakers: desaturated hues, used only on names and markers */
-  --spk-1: #9db4ff;
-  --spk-2: #e8a27c;
-  --spk-3: #8fd0b0;
-  --spk-4: #c9a7f0;
-  --spk-5: #e7c873;
-  --spk-6: #7ccfd8;
-  --spk-7: #ee9bbe;
-  --spk-8: #aeb7c4;
+  /* Speakers: distinct but muted phosphor hues, only on names and markers */
+  --spk-1: #00ff41;
+  --spk-2: #7df9ff;
+  --spk-3: #f2ff7a;
+  --spk-4: #ffb86b;
+  --spk-5: #cfa8ff;
+  --spk-6: #ff8fb4;
+  --spk-7: #9effc4;
+  --spk-8: #b6c9bb;
 
-  --ui: "Instrument Sans", system-ui, sans-serif;
-  --serif: "Newsreader", Georgia, serif;
+  --ui: "IBM Plex Mono", ui-monospace, monospace;
+  --serif: "IBM Plex Sans", system-ui, sans-serif; /* transcript text */
   --ease: cubic-bezier(.2, .7, .2, 1);
-  --radius-s: 6px;
-  --radius-m: 10px;
+  --radius-s: 4px;
+  --radius-m: 8px;
+  --glow: 0 0 18px rgba(0, 255, 65, .35);
 
   color-scheme: dark;
 }
@@ -53,7 +57,7 @@ body {
 button { font: inherit; color: inherit; cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: .45; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-::selection { background: rgba(157, 180, 255, .28); }
+::selection { background: rgba(0, 255, 65, .25); }
 * { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
 
 /* ------------------------------------------------------------- buttons */
@@ -115,7 +119,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   transition: background .2s, transform .1s;
 }
 .primary-btn:active:not(:disabled) { transform: scale(.97); }
-.primary-btn.recording { background: var(--live); }
+.primary-btn.recording { background: transparent; color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent), var(--glow); }
 
 /* ------------------------------------------------------------- sidebar */
 
@@ -215,12 +219,14 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .session-sub { font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
 .session-item .icon-btn { opacity: 0; width: 28px; height: 28px; transition: opacity .15s; }
 .session-item:hover .icon-btn, .session-item:focus-within .icon-btn { opacity: 1; }
+.session-group { padding: 14px 12px 4px; color: var(--faint); font-size: 11px; font-weight: 500; }
+.session-group:first-child { padding-top: 4px; }
 .session-empty { padding: 8px 12px; color: var(--faint); font-size: 13px; }
 
 .engine { display: flex; align-items: center; gap: 8px; margin-top: auto; padding: 8px; font-size: 12px; color: var(--faint); }
 .dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: #c99a4b; }
-.engine.ready .dot { background: var(--ok); }
-.engine.error .dot { background: var(--live); }
+.engine.ready .dot { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.engine.error .dot { background: var(--danger); }
 .engine:not(.ready):not(.error) .dot { animation: breathe 1.6s ease-in-out infinite; }
 
 /* ------------------------------------------------------------- main */
@@ -245,9 +251,8 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  font-size: 17px;
+  font-size: 16px;
   font-weight: 600;
-  letter-spacing: -.01em;
 }
 .title-text.placeholder { color: var(--muted); font-weight: 500; }
 .title-input {
@@ -269,6 +274,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 /* ------------------------------------------------------------- transcript */
 
 .transcript {
+  position: relative;
   flex: 1;
   overflow-y: auto;
   padding: 40px 32px 140px; /* room at the bottom for the floating dock */
@@ -276,9 +282,46 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .segments, .partial, .empty { max-width: 760px; margin-left: auto; margin-right: auto; }
 .segments { list-style: none; padding: 0; margin-top: 0; margin-bottom: 0; }
 
-.empty { padding-top: 14vh; padding-left: 72px; }
-.empty-title { margin: 0 0 8px; font: 500 34px/1.15 var(--serif); letter-spacing: -.01em; }
-.empty-text { margin: 0; max-width: 46ch; color: var(--muted); font-size: 15px; }
+/* Empty state: the one ambient effect, Matrix rain, faint behind the call to action */
+.empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  max-width: none;
+  overflow: hidden;
+}
+.rain {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: .16;
+  -webkit-mask-image: radial-gradient(ellipse at center, transparent 18%, #000 70%);
+  mask-image: radial-gradient(ellipse at center, transparent 18%, #000 70%);
+}
+.empty-body { position: relative; display: grid; justify-items: center; gap: 14px; padding: 24px; text-align: center; }
+.empty-title { margin: 0; font: 600 26px/1.2 var(--ui); letter-spacing: .02em; color: var(--text); }
+.empty-title::after { content: "_"; color: var(--accent); animation: caret 1s steps(1) infinite; }
+.empty-text { margin: 0; max-width: 42ch; color: var(--muted); font: 400 15px/1.6 var(--serif); }
+.start-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  height: 52px;
+  margin-top: 10px;
+  padding: 0 26px 0 20px;
+  border: 0;
+  border-radius: var(--radius-m);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font: 600 15px/1 var(--ui);
+  box-shadow: var(--glow);
+  transition: transform .1s, box-shadow .2s;
+}
+.start-cta:hover:not(:disabled) { box-shadow: 0 0 28px rgba(0, 255, 65, .55); }
+.start-cta:active:not(:disabled) { transform: scale(.98); }
+.empty-hint { margin: 0; color: var(--faint); font-size: 12px; }
 
 /* A turn opens with the speaker's name; their passages follow */
 .turn { list-style: none; padding: 26px 0 6px 72px; }
@@ -308,7 +351,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .speaker-input::placeholder { color: var(--faint); font-weight: 500; }
 .more-btn { width: 26px; height: 26px; }
 .more-btn .material-symbols-outlined { font-size: 18px; }
-.speaker-tag .more-btn { opacity: 0; transition: opacity .15s; }
+.speaker-tag .more-btn { opacity: .28; transition: opacity .15s; }
 .turn:hover .more-btn, .speaker-tag:focus-within .more-btn, .speaker-tag .more-btn[aria-expanded="true"] { opacity: 1; }
 
 .segment {
@@ -321,7 +364,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   border-radius: var(--radius-m);
   transition: background .2s;
 }
-.segment:hover, .segment:focus-within { background: rgba(255, 255, 255, .025); }
+.segment:hover, .segment:focus-within { background: rgba(0, 255, 65, .035); }
 .segment time {
   padding-top: 5px;
   text-align: right;
@@ -330,7 +373,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   font-variant-numeric: tabular-nums;
 }
 .segment .lang { display: block; margin-top: 2px; color: var(--faint); font-size: 10px; font-weight: 600; letter-spacing: .04em; }
-.seg-text { margin: 0; max-width: 68ch; color: var(--reading); font: 400 18px/1.65 var(--serif); }
+.seg-text { margin: 0; max-width: 72ch; color: var(--reading); font: 400 16.5px/1.7 var(--serif); }
 .segment.arrived .seg-text { animation: settle .6s var(--ease); }
 .segment.edited .seg-text::after {
   content: "modifié";
@@ -339,7 +382,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   font: 500 11px/1 var(--ui);
   vertical-align: 2px;
 }
-.seg-more { opacity: 0; align-self: start; margin-top: 2px; transition: opacity .15s; }
+.seg-more { opacity: .28; align-self: start; margin-top: 2px; transition: opacity .15s; }
 .segment:hover .seg-more, .segment:focus-within .seg-more, .seg-more[aria-expanded="true"] { opacity: 1; }
 .seg-edit {
   width: 100%;
@@ -351,20 +394,21 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   border-radius: var(--radius-s);
   background: var(--raised);
   color: var(--text);
-  font: 400 18px/1.65 var(--serif);
+  font: 400 16.5px/1.7 var(--serif);
 }
 .seg-edit:focus { outline: none; }
 
 /* What is being said right now: lighter, with a blinking caret */
-.partial { min-height: 1.65em; margin-top: 6px; padding-left: 72px; color: var(--muted); font: italic 400 18px/1.65 var(--serif); }
+.partial { min-height: 1.7em; margin-top: 6px; padding-left: 72px; color: var(--muted); font: 400 16.5px/1.7 var(--serif); }
 .partial:not(:empty)::after {
   content: "";
   display: inline-block;
-  width: 2px;
-  height: 1.05em;
+  width: .55em;
+  height: 1.1em;
   margin-left: 3px;
-  vertical-align: -2px;
-  background: var(--live);
+  vertical-align: -3px;
+  background: var(--accent);
+  box-shadow: var(--glow);
   animation: caret 1s steps(1) infinite;
 }
 
@@ -381,14 +425,24 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   padding: 8px 8px 8px 16px;
   border: 1px solid var(--line-strong);
   border-radius: 999px;
-  background: rgba(21, 25, 34, .82);
+  background: rgba(8, 14, 10, .86);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
   box-shadow: 0 18px 50px rgba(0, 0, 0, .45);
 }
 .wave { width: 160px; height: 32px; }
 .wave canvas { display: block; width: 100%; height: 100%; }
-.timer { min-width: 64px; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+.timer { min-width: 52px; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+.status {
+  min-width: 92px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+.status.live { color: var(--accent); text-shadow: 0 0 10px rgba(0, 255, 65, .6); }
+.status.live::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 8px; border-radius: 50%; background: var(--accent); box-shadow: var(--glow); animation: breathe 1.4s ease-in-out infinite; vertical-align: 1px; }
 .record-btn {
   position: relative;
   display: inline-flex;
@@ -404,13 +458,13 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   transition: background .3s var(--ease), color .3s, transform .1s;
 }
 .record-btn:active:not(:disabled) { transform: scale(.97); }
-.record-btn.recording { background: var(--live); color: #1a0f0d; }
+.record-btn.recording { background: transparent; color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent), var(--glow); }
 /* A soft ring breathes around the button while recording */
 .record-btn.recording::after {
   content: "";
   position: absolute;
   inset: -4px;
-  border: 2px solid var(--live);
+  border: 1px solid var(--accent);
   border-radius: inherit;
   opacity: 0;
   animation: ring 2s ease-out infinite;
@@ -463,9 +517,9 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   text-align: left;
 }
 .menu-item .material-symbols-outlined { color: var(--muted); font-size: 18px; }
-.menu-item:hover, .menu-item:focus-visible { background: rgba(255, 255, 255, .05); outline: none; }
+.menu-item:hover, .menu-item:focus-visible { background: var(--accent-soft); outline: none; }
 .menu-item[aria-checked="true"] .material-symbols-outlined { color: var(--accent); }
-.menu-item.danger, .menu-item.danger .material-symbols-outlined { color: var(--live); }
+.menu-item.danger, .menu-item.danger .material-symbols-outlined { color: var(--danger); }
 
 /* ------------------------------------------------------------- profiles */
 
@@ -495,18 +549,19 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .read-text {
   margin: 0;
   padding: 18px 20px;
+  border: 1px solid var(--line);
   border-radius: var(--radius-m);
   background: var(--raised);
   color: var(--reading);
-  font: 400 18px/1.7 var(--serif);
+  font: 400 17px/1.75 var(--serif);
   transition: box-shadow .3s;
 }
-.read-text.reading { box-shadow: inset 2px 0 0 var(--live); }
+.read-text.reading { box-shadow: inset 2px 0 0 var(--accent); }
 .enrol-progress { height: 3px; margin: 14px 0 4px; overflow: hidden; border-radius: 3px; background: var(--line); }
 .enrol-progress div { width: 0; height: 100%; background: var(--live); transition: width .2s linear; }
 .enrol-actions { display: flex; align-items: center; gap: 14px; margin-top: 16px; }
 .enrol-status { color: var(--muted); font-size: 13px; }
-.enrol-status.error { color: var(--live); }
+.enrol-status.error { color: var(--danger); }
 
 .profile-list { list-style: none; margin: 0; padding: 0; }
 .profile-list li { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); }
@@ -580,7 +635,11 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   .chip-btn.select { padding-right: 12px; }
   .chip-btn.select select { position: absolute; inset: 0; opacity: 0; }
   .transcript { padding: 24px 16px 140px; }
-  .empty, .turn, .partial { padding-left: 0; }
+  .turn, .partial { padding-left: 0; }
+  .status { min-width: 0; }
+  .status.live::before { margin-right: 0; }
+  .status span, .status { font-size: 0; }
+  .status.live::before { font-size: 12px; }
   .segment { grid-template-columns: 1fr 28px; gap: 2px 8px; }
   .segment time { grid-column: 1 / -1; padding-top: 0; text-align: left; }
   .segment .lang { display: inline; margin-left: 6px; }
@@ -588,3 +647,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   .wave { width: 72px; }
   .profiles-scroll { padding: 24px 16px; }
 }
+
+/* Sentences meant to be read stay in the text face; the monospace is for
+   labels, names, times and controls. */
+.page-intro, .consent, .hint, .empty-hint, .menu-note, .toast { font-family: var(--serif); }
