@@ -344,3 +344,26 @@ def test_unknown_participant_is_refused(client):
     session_id, _ = record(client, silence(0.5))
     r = client.patch(f"/api/sessions/{session_id}", json={"participants": ["P00000000"]})
     assert r.status_code == 400
+
+
+def test_all_passages_of_a_speaker_go_to_a_profile(client):
+    awa = enrol_voice(client, "Awa", 440)
+    a, b = 220, 660
+    audio = np.concatenate([
+        tone(1.5, a), silence(1.2), tone(1.5, b), silence(1.2), tone(1.5, a), silence(1.2),
+    ])
+    session_id, _ = record(client, audio)
+    url = f"/api/sessions/{session_id}/speakers"
+
+    # "Intervenant 1" was Awa: both of S1's passages become hers.
+    session = client.post(f"{url}/S1/reassign", json={"to": awa["id"]}).json()
+    assert [s["speaker"] for s in session["segments"]] == [awa["id"], "S2", awa["id"]]
+    assert session["speakers"][awa["id"]] == "Awa"
+
+    # One person split in two: S2 merged into Awa as well.
+    session = client.post(f"{url}/S2/reassign", json={"to": awa["id"]}).json()
+    assert {s["speaker"] for s in session["segments"]} == {awa["id"]}
+    assert all(s["speaker_manual"] for s in session["segments"])
+
+    assert client.post(f"{url}/S9/reassign", json={"to": awa["id"]}).status_code == 404
+    assert client.post(f"{url}/{awa['id']}/reassign", json={"to": "x"}).status_code == 400

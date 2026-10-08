@@ -279,7 +279,10 @@ function speakerTag(id) {
   more.setAttribute("aria-haspopup", "menu");
   more.append(icon("more_vert"));
   more.addEventListener("click", () => {
-    const items = [{ icon: "edit", label: "Renommer l'intervenant", action: () => startRename(tag) }];
+    const items = [
+      { icon: "edit", label: "Renommer l'intervenant", action: () => startRename(tag) },
+      { icon: "switch_account", label: "Attribuer ses passages à…", action: () => chooseMergeTarget(more, id) },
+    ];
     if (state.speakers[id]) {
       items.push({
         icon: "undo",
@@ -430,6 +433,52 @@ async function chooseSpeaker(anchor, segment) {
   }
   items.push({ icon: "person_add", label: "Nouvel intervenant", action: () => setSpeaker(segment, "new") });
   openMenu(anchor, items);
+}
+
+// Every passage of `id` goes to an enrolled voice (most often: "Intervenant 1"
+// is in fact someone registered) or to another speaker of the meeting.
+async function chooseMergeTarget(anchor, id) {
+  let profiles = [];
+  try {
+    profiles = await (await fetch("/api/profiles")).json();
+  } catch {
+    // profiles are optional here
+  }
+  const ordered = [
+    ...profiles.filter((p) => state.participants.includes(p.id)),
+    ...profiles.filter((p) => !state.participants.includes(p.id)),
+  ].filter((p) => p.id !== id);
+  const others = [...new Set(state.segmentList.map((s) => s.speaker).filter(Boolean))]
+    .filter((s) => s !== id && !profiles.some((p) => p.id === s));
+
+  const items = [];
+  if (ordered.length) {
+    items.push({ heading: "Voix inscrites" });
+    for (const p of ordered) {
+      items.push({ icon: "account_circle", label: p.name, action: () => mergeSpeaker(id, p.id) });
+    }
+  }
+  if (others.length) {
+    items.push({ heading: "Autres intervenants de la réunion" });
+    for (const s of others) {
+      items.push({ icon: "person", label: speakerName(s), action: () => mergeSpeaker(id, s) });
+    }
+  }
+  if (!items.length) {
+    items.push({ note: "Aucune autre personne. Inscrivez des voix dans l'onglet Profils." });
+  }
+  openMenu(anchor, items);
+}
+
+async function mergeSpeaker(id, to) {
+  const res = await fetch(`/api/sessions/${state.sessionId}/speakers/${id}/reassign`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ to }),
+  });
+  if (!res.ok) return toast("Impossible d'attribuer les passages.");
+  renderSession(await res.json()); // also refreshes the names
+  toast(`Passages attribués à ${speakerName(to)}.`);
 }
 
 async function setSpeaker(segment, speaker) {

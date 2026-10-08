@@ -128,6 +128,10 @@ class SegmentUpdate(BaseModel):
     speaker: str | None = None
 
 
+class SpeakerReassign(BaseModel):
+    to: str  # "S2", a profile id, or "new"
+
+
 class SessionUpdate(BaseModel):
     title: str | None = Field(None, max_length=120)
     # Voice profiles of the people present; [] = compare with every profile.
@@ -280,25 +284,52 @@ def create_app(
                 segment["edited"] = True
 
         if update.speaker is not None:
-            tracker = trackers.get(session_id)
-            speaker = update.speaker
-            if speaker == "new":
-                speaker = tracker.new_speaker_id() if tracker else next_guest_id(session)
-            elif not SPEAKER_ID_RE.match(speaker):
-                raise HTTPException(400, f"Intervenant inconnu : {speaker}")
-            elif speaker.startswith("P"):
-                profile = next((p for p in profiles.list() if p["id"] == speaker), None)
-                if profile is None:
-                    raise HTTPException(404, "Profil introuvable")
-                session["speakers"].setdefault(speaker, profile["name"])
+            speaker = resolve_speaker(session, update.speaker)
+            await give_segments(session, [segment], speaker)
+
+        store.save(session)
+        return segment
+
+    @app.post("/api/sessions/{session_id}/speakers/{speaker_id}/reassign")
+    async def reassign_speaker(session_id: str, speaker_id: str, update: SpeakerReassign):
+        """All of a speaker's passages go to someone else: an enrolled voice
+        ("Intervenant 1" was in fact Awa) or another speaker of the meeting
+        (one person split in two)."""
+        try:
+            session = live.get(session_id) or store.get(session_id)
+        except KeyError:
+            raise HTTPException(404, "Session introuvable")
+        segments = [s for s in session["segments"] if s.get("speaker") == speaker_id]
+        if not segments:
+            raise HTTPException(404, "Aucun passage pour cet intervenant")
+        target = resolve_speaker(session, update.to)
+        if target != speaker_id:
+            await give_segments(session, segments, target)
+            store.save(session)
+        return session
+
+    def resolve_speaker(session: dict, speaker: str) -> str:
+        """Validate a target speaker: "new", "S<n>" or an enrolled profile."""
+        if speaker == "new":
+            tracker = trackers.get(session["id"])
+            return tracker.new_speaker_id() if tracker else next_guest_id(session)
+        if not SPEAKER_ID_RE.match(speaker):
+            raise HTTPException(400, f"Intervenant inconnu : {speaker}")
+        if speaker.startswith("P"):
+            profile = next((p for p in profiles.list() if p["id"] == speaker), None)
+            if profile is None:
+                raise HTTPException(404, "Profil introuvable")
+            session["speakers"].setdefault(speaker, profile["name"])
+        return speaker
+
+    async def give_segments(session: dict, segments: list[dict], speaker: str) -> None:
+        tracker = trackers.get(session["id"])
+        for segment in segments:
             segment["speaker"] = speaker
             segment["speaker_manual"] = True  # the automatic relabelling keeps it
             if tracker:
                 # In a thread: it may wait for a segment being labelled.
-                await asyncio.to_thread(tracker.reassign, segment_id, speaker)
-
-        store.save(session)
-        return segment
+                await asyncio.to_thread(tracker.reassign, segment["id"], speaker)
 
     @app.delete("/api/sessions/{session_id}", status_code=204)
     def delete_session(session_id: str):
