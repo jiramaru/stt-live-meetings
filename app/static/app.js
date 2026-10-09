@@ -1118,9 +1118,8 @@ async function flushNotes() {
     : "Échec de l'enregistrement, réessai à la prochaine frappe";
 }
 
-// "[12:04] " at the cursor: the meeting's clock while recording, the time of
-// day otherwise.
-function insertNoteTime() {
+// The meeting's clock while recording, the time of day otherwise.
+function noteStamp() {
   let stamp;
   if (state.recording) {
     const running = state.timerHandle ? (performance.now() - state.startedAt) / 1000 : 0;
@@ -1128,15 +1127,30 @@ function insertNoteTime() {
   } else {
     stamp = new Date().toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
   }
+  return `[${stamp}] `;
+}
+
+function insertInNotes(text) {
   const area = els.notesArea;
   const { selectionStart: at, selectionEnd: end, value } = area;
-  const before = value.slice(0, at);
-  const prefix = before && !before.endsWith("\n") && !before.endsWith(" ") ? " " : "";
-  const insert = `${prefix}[${stamp}] `;
-  area.value = before + insert + value.slice(end);
+  area.value = value.slice(0, at) + text + value.slice(end);
   area.focus();
-  area.selectionStart = area.selectionEnd = at + insert.length;
+  area.selectionStart = area.selectionEnd = at + text.length;
   onNotesInput();
+}
+
+// "Insérer l'heure" button: the stamp at the cursor.
+function insertNoteTime() {
+  const before = els.notesArea.value.slice(0, els.notesArea.selectionStart);
+  const space = before && !before.endsWith("\n") && !before.endsWith(" ") ? " " : "";
+  insertInNotes(space + noteStamp());
+}
+
+// Enter starts a new line with the time; Shift+Enter is a plain new line.
+function onNotesKeydown(e) {
+  if (e.key !== "Enter" || e.shiftKey || e.isComposing) return;
+  e.preventDefault();
+  insertInNotes(`\n${noteStamp()}`);
 }
 
 function toggleNotes(open = !els.notesPanel.classList.contains("open")) {
@@ -1477,6 +1491,7 @@ els.notesBtn.addEventListener("click", () => toggleNotes());
 els.notesClose.addEventListener("click", () => toggleNotes(false));
 els.notesArea.addEventListener("input", onNotesInput);
 els.notesTime.addEventListener("click", insertNoteTime);
+els.notesArea.addEventListener("keydown", onNotesKeydown);
 window.addEventListener("beforeunload", () => { if (notesPending) flushNotes(); });
 els.exportBtn.addEventListener("click", openExportMenu);
 els.startCta.addEventListener("click", () => { if (!state.recording) startRecording(); });
