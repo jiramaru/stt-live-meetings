@@ -367,3 +367,19 @@ def test_all_passages_of_a_speaker_go_to_a_profile(client):
 
     assert client.post(f"{url}/S9/reassign", json={"to": awa["id"]}).status_code == 404
     assert client.post(f"{url}/{awa['id']}/reassign", json={"to": "x"}).status_code == 400
+
+
+def test_notes_before_during_and_after_the_meeting(client):
+    with client.websocket_connect("/ws/transcribe") as ws:
+        ws.send_json({"type": "start", "title": "Copil", "notes": "Ordre du jour : budget"})
+        session = ws.receive_json()["session"]
+        assert session["notes"] == "Ordre du jour : budget"
+        # Typed while recording: the recorder's own saves must keep it.
+        client.patch(f"/api/sessions/{session['id']}", json={"notes": "Budget validé"})
+        ws.send_bytes(pcm16(np.concatenate([tone(1.5), silence(1.2)])))
+        ws.send_json({"type": "stop"})
+        while ws.receive_json()["type"] != "stopped":
+            pass
+    saved = client.get(f"/api/sessions/{session['id']}").json()
+    assert saved["notes"] == "Budget validé"
+    assert "Budget validé" in client.get(f"/api/sessions/{session['id']}/export?format=md").text

@@ -136,6 +136,7 @@ class SessionUpdate(BaseModel):
     title: str | None = Field(None, max_length=120)
     # Voice profiles of the people present; [] = compare with every profile.
     participants: list[str] | None = None
+    notes: str | None = Field(None, max_length=50_000)
     speakers: dict[str, str] | None = None  # speaker id -> display name ("" = default)
 
 
@@ -251,6 +252,8 @@ def create_app(
             session["title"] = update.title.strip() or session["title"]
         if update.participants is not None:
             await set_participants(session, update.participants)
+        if update.notes is not None:
+            session["notes"] = update.notes
         for speaker, name in (update.speakers or {}).items():
             if not SPEAKER_ID_RE.match(speaker):
                 raise HTTPException(400, f"Intervenant inconnu : {speaker}")
@@ -410,6 +413,7 @@ async def run_session(
     session = store.create(start.get("title", ""), language)
     session["participants"] = list(names)
     session["speakers"].update(names)
+    session["notes"] = str(start.get("notes") or "")[:50_000]  # written before the start
     live[session["id"]] = session
     recording = None
     if settings.save_audio:

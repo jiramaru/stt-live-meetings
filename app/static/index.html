@@ -49,6 +49,10 @@
           </button>
         </div>
         <div class="topbar-actions">
+          <button class="chip-btn notes-toggle" id="notesBtn" aria-controls="notesPanel" aria-expanded="false"
+                  title="Prendre des notes pendant la réunion">
+            <span class="material-symbols-outlined">edit_note</span><span>Notes</span>
+          </button>
           <button class="chip-btn" id="exportBtn" aria-haspopup="menu" hidden>
             <span class="material-symbols-outlined">download</span><span>Exporter</span>
           </button>
@@ -67,6 +71,8 @@
         </div>
       </header>
 
+      <div class="meeting-body">
+      <div class="stage">
       <section class="transcript" id="transcript" aria-live="polite">
         <div class="empty" id="emptyState">
           <canvas class="rain" id="rainCanvas" aria-hidden="true"></canvas>
@@ -94,6 +100,28 @@
         <button class="stop-btn" id="stopBtn" hidden>
           <span class="material-symbols-outlined">stop</span><span>Terminer</span>
         </button>
+      </div>
+      </div>
+
+      <aside class="notes-panel" id="notesPanel" aria-label="Notes de la réunion">
+        <div class="notes-inner">
+          <header class="notes-head">
+            <h2>Notes</h2>
+            <span class="notes-status" id="notesStatus" role="status"></span>
+            <button class="icon-btn" id="notesClose" aria-label="Fermer les notes">
+              <span class="material-symbols-outlined">close</span>
+            </button>
+          </header>
+          <textarea class="notes-area" id="notesArea" spellcheck="true"
+                    placeholder="Décisions, actions à mener, points à revoir…"></textarea>
+          <footer class="notes-foot">
+            <button class="chip-btn" id="notesTime" title="Insère le moment de la réunion, pour retrouver le passage">
+              <span class="material-symbols-outlined">schedule</span><span>Insérer l'heure</span>
+            </button>
+            <span class="notes-hint" title="Les notes sont incluses dans les exports">Enregistrement automatique</span>
+          </footer>
+        </div>
+      </aside>
       </div>
     </div>
 

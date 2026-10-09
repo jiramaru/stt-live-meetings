@@ -446,6 +446,50 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   animation: caret 1s steps(1) infinite;
 }
 
+/* ------------------------------------------------------------- notes panel */
+
+/* The transcript and the notes share the width: the panel slides in from
+   the right and the transcript narrows, nothing is covered. */
+.meeting-body { flex: 1; min-height: 0; display: flex; }
+.stage { position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.notes-panel {
+  width: 0;
+  flex: none;
+  overflow: hidden;
+  border-left: 1px solid transparent;
+  background: var(--rail);
+  transition: width .34s var(--ease), border-color .34s;
+}
+.notes-panel.open { width: 380px; border-left-color: var(--line); }
+.notes-inner {
+  width: 380px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  opacity: 0;
+  transform: translateX(24px);
+  transition: opacity .25s, transform .34s var(--ease);
+}
+.notes-panel.open .notes-inner { opacity: 1; transform: none; }
+.notes-head { display: flex; align-items: center; gap: 10px; height: 52px; padding: 0 10px 0 18px; border-bottom: 1px solid var(--line); }
+.notes-head h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.notes-status { flex: 1; color: var(--faint); font-size: 12px; }
+.notes-area {
+  flex: 1;
+  width: 100%;
+  padding: 18px;
+  resize: none;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--reading);
+  font: 400 15px/1.7 var(--serif);
+}
+.notes-area::placeholder { color: var(--faint); }
+.notes-foot { display: flex; align-items: center; gap: 12px; padding: 12px 18px; border-top: 1px solid var(--line); }
+.notes-hint { color: var(--faint); font: 400 12px/1.4 var(--serif); }
+.notes-toggle[aria-expanded="true"] { border-color: var(--accent); color: var(--accent); }
+
 /* ------------------------------------------------------------- dock */
 
 .dock {
@@ -680,6 +724,8 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   .dock { bottom: 16px; padding-left: 12px; }
   .wave { width: 72px; }
   .profiles-scroll { padding: 24px 16px; }
+  /* Notes are a desktop feature */
+  .notes-toggle, .notes-panel { display: none; }
 }
 
 /* Sentences meant to be read stay in the text face; the monospace is for

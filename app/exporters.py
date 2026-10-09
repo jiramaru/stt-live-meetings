@@ -36,20 +36,28 @@ def _started(session: dict) -> str:
     return datetime.fromisoformat(session["started_at"]).astimezone().strftime("%d/%m/%Y %H:%M")
 
 
+def _notes(session: dict) -> str:
+    return (session.get("notes") or "").strip()
+
+
 def to_txt(session: dict) -> str:
     lines = [session["title"], f"Date : {_started(session)}", ""]
+    if _notes(session):
+        lines += ["Notes :", _notes(session), "", "Transcription :", ""]
     for s, name in _turns(session):
         if name:
-            lines += ["", f"{name} :"] if len(lines) > 3 else [f"{name} :"]
+            lines += ["", f"{name} :"] if lines[-1] else [f"{name} :"]
         lines.append(f"[{_clock(s['start'])}] {s['text']}")
     return "\n".join(lines) + "\n"
 
 
 def to_markdown(session: dict) -> str:
     lines = [f"# {session['title']}", "", f"*Date : {_started(session)}*", ""]
+    if _notes(session):
+        lines += ["## Notes", "", _notes(session), "", "## Transcription", ""]
     for s, name in _turns(session):
         if name:
-            lines += [f"### {name}", ""] if len(lines) == 4 else ["", f"### {name}", ""]
+            lines += [f"### {name}", ""] if not lines[-1] else ["", f"### {name}", ""]
         lines.append(f"**{_clock(s['start'])}** {s['text']}  ")
     return "\n".join(lines) + "\n"
 
@@ -70,6 +78,11 @@ def to_docx(session: dict) -> bytes:
     doc = Document()
     doc.add_heading(session["title"], level=1)
     doc.add_paragraph(f"Date : {_started(session)}")
+    if _notes(session):
+        doc.add_heading("Notes", level=2)
+        for line in _notes(session).splitlines():
+            doc.add_paragraph(line)
+        doc.add_heading("Transcription", level=2)
     for s, name in _turns(session):
         if name:
             heading = doc.add_paragraph()

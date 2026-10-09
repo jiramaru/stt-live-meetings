@@ -61,3 +61,13 @@ def test_speaker_names_in_exports():
     assert "Intervenant 2 :\n[01:02:05] Let's start." in txt
     assert "M. le Ministre : Bonjour à tous." in to_srt(session)
     assert "### Intervenant 2" in to_markdown(session)
+
+
+def test_notes_come_first_in_exports():
+    session = {**SESSION, "notes": "Décision : lancer l'appel d'offres.\n[12:04] Budget validé"}
+    txt = to_txt(session)
+    assert txt.index("Notes :") < txt.index("Transcription :") < txt.index("Bonjour à tous.")
+    assert "[12:04] Budget validé" in txt
+    md = to_markdown(session)
+    assert "## Notes" in md and md.index("## Notes") < md.index("## Transcription")
+    assert "Notes" not in to_txt(SESSION)  # nothing added without notes

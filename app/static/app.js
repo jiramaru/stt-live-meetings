@@ -21,6 +21,12 @@ const els = {
   rainCanvas: $("rainCanvas"),
   statusLabel: $("statusLabel"),
   exportBtn: $("exportBtn"),
+  notesBtn: $("notesBtn"),
+  notesPanel: $("notesPanel"),
+  notesArea: $("notesArea"),
+  notesStatus: $("notesStatus"),
+  notesTime: $("notesTime"),
+  notesClose: $("notesClose"),
   timer: $("timer"),
   recordBtn: $("recordBtn"),
   recordIcon: $("recordIcon"),
@@ -705,7 +711,9 @@ async function openSession(id) {
   const res = await fetch(`/api/sessions/${id}`);
   if (!res.ok) return toast("Réunion introuvable.");
   const session = await res.json();
+  await flushNotes();
   state.sessionId = id;
+  setNotes(session.notes);
   history.replaceState(null, "", `#${id}`); // the address links to this meeting
   setTitle(session.title);
   els.timer.textContent = clock(session.segments.at(-1)?.end ?? 0);
@@ -741,7 +749,9 @@ async function deleteSession(id, button) {
 
 function newMeeting() {
   if (state.recording) return;
+  flushNotes();
   state.sessionId = null;
+  setNotes("");
   history.replaceState(null, "", location.pathname);
   state.speakers = {};
   setParticipants([]);
@@ -936,6 +946,7 @@ function openSocket() {
         title: state.title,
         language: els.languageSelect.value,
         participants: state.participants,
+        notes: els.notesArea.value,
       }));
     };
     ws.onmessage = ({ data }) => {
@@ -1063,6 +1074,80 @@ function stopRecording() {
     setPartial("Finalisation…");
     ws.send(JSON.stringify({ type: "stop" }));
   }
+}
+
+// ---------------------------------------------------------------- notes
+
+// Notes belong to the meeting shown. They are saved as you type (after a
+// short pause); before the meeting starts they travel with "start".
+const NOTES_DELAY = 800;
+let notesTimer = null;
+let notesPending = null; // { id, text } waiting to be saved
+
+function setNotes(text) {
+  clearTimeout(notesTimer);
+  notesPending = null;
+  els.notesArea.value = text || "";
+  els.notesStatus.textContent = "";
+}
+
+function onNotesInput() {
+  if (!state.sessionId) {
+    els.notesStatus.textContent = "Enregistrées au démarrage";
+    return;
+  }
+  notesPending = { id: state.sessionId, text: els.notesArea.value };
+  els.notesStatus.textContent = "Modifications…";
+  clearTimeout(notesTimer);
+  notesTimer = setTimeout(flushNotes, NOTES_DELAY);
+}
+
+async function flushNotes() {
+  clearTimeout(notesTimer);
+  const pending = notesPending;
+  if (!pending) return;
+  notesPending = null;
+  const res = await fetch(`/api/sessions/${pending.id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ notes: pending.text }),
+  }).catch(() => null);
+  if (pending.id !== state.sessionId) return; // another meeting is shown now
+  els.notesStatus.textContent = res?.ok
+    ? `Enregistré à ${new Date().toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}`
+    : "Échec de l'enregistrement, réessai à la prochaine frappe";
+}
+
+// "[12:04] " at the cursor: the meeting's clock while recording, the time of
+// day otherwise.
+function insertNoteTime() {
+  let stamp;
+  if (state.recording) {
+    const running = state.timerHandle ? (performance.now() - state.startedAt) / 1000 : 0;
+    stamp = clock(state.elapsed + running);
+  } else {
+    stamp = new Date().toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+  }
+  const area = els.notesArea;
+  const { selectionStart: at, selectionEnd: end, value } = area;
+  const before = value.slice(0, at);
+  const prefix = before && !before.endsWith("\n") && !before.endsWith(" ") ? " " : "";
+  const insert = `${prefix}[${stamp}] `;
+  area.value = before + insert + value.slice(end);
+  area.focus();
+  area.selectionStart = area.selectionEnd = at + insert.length;
+  onNotesInput();
+}
+
+function toggleNotes(open = !els.notesPanel.classList.contains("open")) {
+  els.notesPanel.classList.toggle("open", open);
+  els.notesBtn.setAttribute("aria-expanded", String(open));
+  try {
+    localStorage.setItem("notesOpen", open ? "1" : "0");
+  } catch {
+    // not remembered, that is all
+  }
+  if (open) setTimeout(() => els.notesArea.focus(), 200);
 }
 
 // ---------------------------------------------------------------- participants
@@ -1388,6 +1473,11 @@ function resetEnrolForm() {
 // ---------------------------------------------------------------- wiring
 
 els.participantsBtn.addEventListener("click", openParticipants);
+els.notesBtn.addEventListener("click", () => toggleNotes());
+els.notesClose.addEventListener("click", () => toggleNotes(false));
+els.notesArea.addEventListener("input", onNotesInput);
+els.notesTime.addEventListener("click", insertNoteTime);
+window.addEventListener("beforeunload", () => { if (notesPending) flushNotes(); });
 els.exportBtn.addEventListener("click", openExportMenu);
 els.startCta.addEventListener("click", () => { if (!state.recording) startRecording(); });
 els.tabMeetings.addEventListener("click", () => showTab("meetings"));
@@ -1409,6 +1499,11 @@ window.addEventListener("beforeunload", (e) => {
 });
 
 setTitle("");
+try {
+  if (localStorage.getItem("notesOpen") === "1") toggleNotes(true);
+} catch {
+  // storage unavailable: the panel starts closed
+}
 updateRecordButton();
 updateEmptyState();
 if (/^#[0-9a-f]{32}$/.test(location.hash)) openSession(location.hash.slice(1));

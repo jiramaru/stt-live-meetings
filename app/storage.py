@@ -33,6 +33,7 @@ class SessionStore:
             "ended_at": None,
             "speakers": {},  # speaker id -> name given by the user
             "participants": [],  # voice profile ids of the people present ([] = all)
+            "notes": "",  # free notes taken during the meeting
             "segments": [],
         }
         self.save(session)
@@ -51,6 +52,7 @@ class SessionStore:
         session = json.loads(path.read_text(encoding="utf-8"))
         session.setdefault("speakers", {})  # sessions recorded before speaker labels
         session.setdefault("participants", [])
+        session.setdefault("notes", "")
         return session
 
     def list(self) -> list[dict]:
